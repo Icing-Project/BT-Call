@@ -105,9 +105,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Status Card
@@ -200,44 +201,46 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 20),
             // Devices List
-            Expanded(
-              child: btProvider.devices.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(FontAwesomeIcons.bluetooth, size: 100, color: Colors.grey),
-                          const SizedBox(height: 16),
-                          const Text('No devices found'),
-                        ],
+            if (btProvider.devices.isEmpty)
+              Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(FontAwesomeIcons.bluetooth, size: 100, color: Colors.grey),
+                    const SizedBox(height: 16),
+                    const Text('No devices found'),
+                  ],
+                ),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: btProvider.devices.length,
+                itemBuilder: (context, index) {
+                  final Device device = btProvider.devices[index];
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    child: Card(
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Theme.of(context).colorScheme.primary,
+                          child: const Icon(FontAwesomeIcons.bluetooth, color: Colors.white),
+                        ),
+                        title: Text(device.name),
+                        subtitle: Text(device.address),
+                        trailing: ElevatedButton(
+                          onPressed: () => btProvider.connectToDevice(device.address),
+                          child: const Text('Connect'),
+                        ),
                       ),
-                    )
-                  : ListView.builder(
-                      itemCount: btProvider.devices.length,
-                      itemBuilder: (context, index) {
-                        final Device device = btProvider.devices[index];
-                        return AnimatedContainer(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeInOut,
-                          child: Card(
-                            child: ListTile(
-                              leading: CircleAvatar(
-                                backgroundColor: Theme.of(context).colorScheme.primary,
-                                child: const Icon(FontAwesomeIcons.bluetooth, color: Colors.white),
-                              ),
-                              title: Text(device.name),
-                              subtitle: Text(device.address),
-                              trailing: ElevatedButton(
-                                onPressed: () => btProvider.connectToDevice(device.address),
-                                child: const Text('Connect'),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
                     ),
-            ),
+                  );
+                },
+              ),
           ],
+          ),
         ),
       ),
     );
