@@ -5,7 +5,7 @@ import '../models/device.dart';
 import '../services/bluetooth_audio_service.dart';
 
 class BluetoothProvider extends ChangeNotifier {
-  final BluetoothAudioService _service = BluetoothAudioService();
+  final BluetoothAudioService _service = BluetoothAudioService.instance;
 
   List<Device> _devices = [];
   String _status = 'idle';
