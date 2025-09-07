@@ -9,6 +9,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import com.icing.dialer.KeystoreHelper
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
@@ -58,7 +59,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-        methodChannel.setMethodCallHandler { call, result ->
+    methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "startServer" -> {
                     // permission check and request
@@ -158,6 +159,10 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+        // Keystore crypto plugin channel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.example.keystore").setMethodCallHandler { call, result ->
+            KeystoreHelper(call, result).handleMethodCall()
         }
     }
     
