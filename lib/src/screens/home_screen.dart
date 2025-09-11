@@ -6,6 +6,7 @@ import '../providers/bluetooth_provider.dart';
 import '../providers/theme_provider.dart';
 import '../models/device.dart';
 import 'key_management.dart';
+import 'call_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -29,10 +30,35 @@ class _HomeScreenState extends State<HomeScreen> {
       final valid = _macRegExp.hasMatch(_manualController.text.trim());
       if (valid != _isMacValid) setState(() => _isMacValid = valid);
     });
+    
+    // Listen for connection changes to navigate to call screen
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final btProvider = context.read<BluetoothProvider>();
+      btProvider.addListener(_onConnectionChanged);
+    });
+  }
+  
+  void _onConnectionChanged() {
+    final btProvider = context.read<BluetoothProvider>();
+    
+    // Navigate to call screen when connected
+    if (btProvider.isConnected && btProvider.connectedDevice != null) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (context) => CallScreen(
+            deviceName: btProvider.connectedDevice!.name,
+            deviceAddress: btProvider.connectedDevice!.address,
+          ),
+        ),
+      );
+    }
   }
   @override
   void dispose() {
     _manualController.dispose();
+    // Remove listener to prevent memory leaks
+    final btProvider = context.read<BluetoothProvider>();
+    btProvider.removeListener(_onConnectionChanged);
     super.dispose();
   }
   
@@ -210,14 +236,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 20),
-            // Decrypt Toggle
-            SwitchListTile(
-              title: const Text('Decrypt Audio'),
-              value: btProvider.decryptEnabled,
-              onChanged: btProvider.toggleDecrypt,
-              secondary: const Icon(FontAwesomeIcons.lock),
             ),
             const SizedBox(height: 20),
             // Devices List

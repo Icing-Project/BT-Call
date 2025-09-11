@@ -157,6 +157,29 @@ class MainActivity : FlutterActivity() {
                     client?.toggleDecryption(decrypt)
                     result.success(null)
                 }
+                "endCall" -> {
+                    // Send end call signal to remote device before stopping
+                    try {
+                        server?.sendEndCallSignal()
+                        client?.sendEndCallSignal()
+                        
+                        // Add a small delay to ensure signal is sent
+                        Thread.sleep(100)
+                    } catch (e: Exception) {
+                        android.util.Log.w("MainActivity", "Error sending end call signal: ${e.message}")
+                    }
+                    
+                    // Then stop the connection
+                    server?.stop()
+                    client?.stop()
+                    
+                    // notify Flutter of stopped status
+                    runOnUiThread {
+                        methodChannel.invokeMethod("onStatus", "stopped")
+                        methodChannel.invokeMethod("onCallEnded", null)
+                    }
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }

@@ -38,6 +38,15 @@ class BluetoothAudioClient(
                 val socket: BluetoothSocket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
                 adapter.cancelDiscovery()
                 socket.connect()
+                
+                // Send connected device information to Flutter
+                val deviceName = device.name ?: "Unknown Device"
+                val deviceAddress = device.address
+                
+                eventCallback("onDeviceConnected", mapOf(
+                    "name" to deviceName,
+                    "address" to deviceAddress
+                ))
                 eventCallback("onStatus", "connected")
                 setupStreams(socket)
             } catch (e: IOException) {
@@ -90,7 +99,10 @@ class BluetoothAudioClient(
     // Wrap output stream for encryption
     val cipherOut = CipherOutputStream(rawOut, encryptCipher)
     // Create AudioStreamer with rawIn input, decryptCipher, encrypted output
-    audioStreamer = AudioStreamer(rawIn, decryptCipher, cipherOut)
+    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, cipherOut) {
+        // End call signal received - notify Flutter
+        eventCallback("onCallEnded", null)
+    }
     audioStreamer?.decryptEnabled = decryptEnabled
         audioStreamer!!.start()
     }
@@ -100,6 +112,17 @@ class BluetoothAudioClient(
         audioStreamer?.stop()
         connectedSocket?.close()
     }
+    
+    fun sendEndCallSignal() {
+        try {
+            // Send signal directly through the AudioStreamer's output stream if available
+            audioStreamer?.sendEndCallSignal()
+        } catch (e: Exception) {
+            // Ignore errors when sending end call signal
+            android.util.Log.w("BluetoothAudioClient", "Failed to send end call signal: ${e.message}")
+        }
+    }
+    
     // Toggle decryption display at runtime
     fun toggleDecryption(enabled: Boolean) {
         audioStreamer?.decryptEnabled = enabled

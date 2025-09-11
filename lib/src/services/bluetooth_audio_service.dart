@@ -55,6 +55,10 @@ class BluetoothAudioService {
   Future<void> stop() async {
     await _channel.invokeMethod('stop');
   }
+  
+  Future<void> endCall() async {
+    await _channel.invokeMethod('endCall');
+  }
 
   Future<void> startScan() async {
     await _channel.invokeMethod('startScan');

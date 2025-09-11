@@ -40,6 +40,16 @@ class BluetoothAudioServer(
                 eventCallback("onStatus", "listening")
                 val socket = serverSocket!!.accept()
                 serverSocket!!.close()
+                
+                // Get connected device information and send to Flutter
+                val remoteDevice = socket.remoteDevice
+                val deviceName = remoteDevice.name ?: "Unknown Device"
+                val deviceAddress = remoteDevice.address
+                
+                eventCallback("onDeviceConnected", mapOf(
+                    "name" to deviceName,
+                    "address" to deviceAddress
+                ))
                 eventCallback("onStatus", "connected")
                 setupStreams(socket)
             } catch (e: IOException) {
@@ -91,7 +101,10 @@ class BluetoothAudioServer(
     // Wrap output stream for encryption
     val cipherOut = CipherOutputStream(rawOut, encryptCipher)
     // Create AudioStreamer with input rawIn and decryption cipher, encrypted output
-    audioStreamer = AudioStreamer(rawIn, decryptCipher, cipherOut)
+    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, cipherOut) {
+        // End call signal received - notify Flutter
+        eventCallback("onCallEnded", null)
+    }
     // Set initial decryption mode
     audioStreamer?.decryptEnabled = decryptEnabled
         audioStreamer!!.start()
@@ -103,6 +116,17 @@ class BluetoothAudioServer(
         connectedSocket?.close()
         serverSocket?.close()
     }
+    
+    fun sendEndCallSignal() {
+        try {
+            // Send signal directly through the AudioStreamer's output stream if available
+            audioStreamer?.sendEndCallSignal()
+        } catch (e: Exception) {
+            // Ignore errors when sending end call signal
+            android.util.Log.w("BluetoothAudioServer", "Failed to send end call signal: ${e.message}")
+        }
+    }
+    
     // Toggle decryption at runtime
     fun toggleDecryption(enabled: Boolean) {
         audioStreamer?.decryptEnabled = enabled

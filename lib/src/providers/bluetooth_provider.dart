@@ -11,10 +11,15 @@ class BluetoothProvider extends ChangeNotifier {
   String _status = 'idle';
   bool _decryptEnabled = true;
   final Set<String> _seen = {};
+  
+  // Connected device info
+  Device? _connectedDevice;
 
   List<Device> get devices => _devices;
   String get status => _status;
   bool get decryptEnabled => _decryptEnabled;
+  Device? get connectedDevice => _connectedDevice;
+  bool get isConnected => _status == 'connected' && _connectedDevice != null;
 
   BluetoothProvider() {
     BluetoothAudioService.setMethodCallHandler(_handleNativeCall);
@@ -32,8 +37,26 @@ class BluetoothProvider extends ChangeNotifier {
           notifyListeners();
         }
         break;
+      case 'onDeviceConnected':
+        // Handle when a device connects (from either client or server side)
+        final args = call.arguments as Map;
+        final name = args['name'] as String;
+        final address = args['address'] as String;
+        _connectedDevice = Device(name: name, address: address);
+        notifyListeners();
+        break;
+      case 'onCallEnded':
+        // Handle when the remote device ends the call
+        _status = 'call ended by remote';
+        _connectedDevice = null;
+        notifyListeners();
+        break;
       case 'onStatus':
         _status = call.arguments as String;
+        // Clear connected device if disconnected
+        if (_status == 'stopped' || _status == 'disconnected' || _status.contains('Error')) {
+          _connectedDevice = null;
+        }
         notifyListeners();
         break;
       case 'onError':
@@ -94,8 +117,32 @@ class BluetoothProvider extends ChangeNotifier {
 
   Future<void> connectToDevice(String address) async {
     _status = 'connecting';
+    // Find the device by address to store connected device info
+    final device = _devices.firstWhere(
+      (d) => d.address == address, 
+      orElse: () => Device(name: 'Unknown Device', address: address)
+    );
+    _connectedDevice = device;
     notifyListeners();
     await _service.connectToDevice(address, decrypt: _decryptEnabled);
+  }
+  
+  Future<void> disconnect() async {
+    _status = 'disconnecting';
+    notifyListeners();
+    await _service.stop();
+    _connectedDevice = null;
+    _status = 'disconnected';
+    notifyListeners();
+  }
+  
+  Future<void> endCall() async {
+    _status = 'ending call';
+    notifyListeners();
+    await _service.endCall();
+    _connectedDevice = null;
+    _status = 'call ended';
+    notifyListeners();
   }
 
   void toggleDecrypt(bool value) {
