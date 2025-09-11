@@ -26,17 +26,15 @@ class _CallScreenState extends State<CallScreen> {
     super.initState();
     
     // Listen for call ended events to automatically close the screen
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final btProvider = context.read<BluetoothProvider>();
-      btProvider.addListener(_onCallStateChanged);
-    });
+    final btProvider = Provider.of<BluetoothProvider>(context, listen: false);
+    btProvider.addListener(_onCallStateChanged);
   }
   
   @override
   void dispose() {
     // Remove listener to prevent memory leaks
     try {
-      final btProvider = context.read<BluetoothProvider>();
+      final btProvider = Provider.of<BluetoothProvider>(context, listen: false);
       btProvider.removeListener(_onCallStateChanged);
     } catch (e) {
       // Ignore errors if provider is already disposed
@@ -47,19 +45,19 @@ class _CallScreenState extends State<CallScreen> {
   void _onCallStateChanged() {
     if (!mounted || _isNavigatingBack) return; // Prevent multiple navigation attempts
     
-    final btProvider = context.read<BluetoothProvider>();
+    final btProvider = Provider.of<BluetoothProvider>(context, listen: false);
     
     // Close call screen if call ended by remote device or connection lost
     if (!btProvider.isConnected && 
         (btProvider.status.contains('call ended') || 
          btProvider.status.contains('stopped') || 
-         btProvider.status.contains('Error'))) {
-      _isNavigatingBack = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          Navigator.of(context).pop();
-        }
-      });
+         btProvider.status.contains('Error') ||
+         btProvider.status.contains('ending call'))) {
+      _isNavigatingBack = true; // Set flag before navigation
+      // Navigate immediately
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
     }
   }
 
@@ -317,14 +315,10 @@ class _CallScreenState extends State<CallScreen> {
     if (_isNavigatingBack) return; // Prevent multiple calls
     
     _isNavigatingBack = true;
-    final btProvider = context.read<BluetoothProvider>();
-    btProvider.endCall(); // Use endCall instead of disconnect
+    final btProvider = Provider.of<BluetoothProvider>(context, listen: false);
+    btProvider.endCall(); // This will trigger status change
     
-    // Navigate back after a short delay to ensure the call is properly ended
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        Navigator.of(context).pop(); // Return to home screen
-      }
-    });
+    // Navigate back immediately
+    Navigator.of(context).pop();
   }
 }

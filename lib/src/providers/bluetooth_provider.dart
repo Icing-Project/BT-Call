@@ -138,9 +138,9 @@ class BluetoothProvider extends ChangeNotifier {
   
   Future<void> endCall() async {
     _status = 'ending call';
+    _connectedDevice = null; // Disconnect immediately
     notifyListeners();
     await _service.endCall();
-    _connectedDevice = null;
     _status = 'call ended';
     notifyListeners();
   }

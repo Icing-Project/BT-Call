@@ -21,6 +21,16 @@ class AudioStreamer(
     @Volatile private var running = true
     // Toggle whether to decrypt incoming audio
     @Volatile var decryptEnabled: Boolean = true
+    // Delay signal detection for first few seconds to avoid false positives
+    private var signalDetectionEnabled = false
+    // Track start time to ensure minimum call duration
+    private var startTime = 0L
+    // Skip first few reads after signal detection is enabled
+    private var readsAfterEnable = 0
+    // Require multiple consecutive signal detections to avoid false positives
+    private var consecutiveSignalCount = 0
+    // Flag to prevent multiple termination attempts
+    private var terminationInitiated = false
 
     private val SAMPLE_RATE = 16000
     private val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
@@ -58,8 +68,18 @@ class AudioStreamer(
     )
 
     fun start() {
+        startTime = System.currentTimeMillis()
+        consecutiveSignalCount = 0 // Reset signal count
+        terminationInitiated = false // Reset termination flag
         setupAudioMode()
         initAudioEffects()
+        // Enable signal detection after 2 seconds to avoid false positives during connection
+        thread {
+            Thread.sleep(2000)
+            signalDetectionEnabled = true
+            consecutiveSignalCount = 0 // Reset count when enabling
+            android.util.Log.d("AudioStreamer", "Signal detection enabled")
+        }
         thread { captureAndSend() }
         thread { receiveAndPlay() }
     }
@@ -127,7 +147,12 @@ class AudioStreamer(
                 }
             }
         } catch (e: IOException) {
-            // socket closed or write error - stop loop
+            // Any IOException during an active call is treated as end call signal
+            android.util.Log.d("AudioStreamer", "IOException in captureAndSend: ${e.message} - treating as end call")
+            if (!terminationInitiated) {
+                terminationInitiated = true
+                onEndCallReceived()
+            }
         } finally {
             try { recorder.stop() } catch (_: Exception) {}
         }
@@ -144,17 +169,59 @@ class AudioStreamer(
                 // Always read ciphertext from rawIn
                 val count = rawIn.read(buf)
                 if (count > 0) {
-                    // Check for end call signal (0xFF, 0xFF, 0x00, 0x00)
-                    if (count >= 4 && 
-                        buf[0] == 0xFF.toByte() && buf[1] == 0xFF.toByte() && 
-                        buf[2] == 0x00.toByte() && buf[3] == 0x00.toByte()) {
-                        // End call signal received
-                        onEndCallReceived()
-                        break
-                    }
-                    
                     // Always update cipher state to stay in sync
                     val decrypted = decryptCipher.update(buf, 0, count)
+                    
+                    // Check for end call signal in decrypted data
+                    var signalFound = false
+                    val currentTime = System.currentTimeMillis()
+                    if (!terminationInitiated && signalDetectionEnabled && decrypted.size >= 32 && (currentTime - startTime) > 1000 && readsAfterEnable > 5) {
+                        // Check for 32-byte alternating pattern ONLY at the beginning of the buffer
+                        var isSignal = true
+                        for (i in 0..31) {
+                            val expected = if (i % 2 == 0) 0xAA.toByte() else 0x55.toByte()
+                            if (decrypted[i] != expected) {
+                                isSignal = false
+                                break
+                            }
+                        }
+                        if (isSignal) {
+                            signalFound = true
+                            android.util.Log.d("AudioStreamer", "32-byte alternating end call signal found at buffer start")
+                        }
+                        
+                        // Also check for the old 4-byte signal at the beginning for backward compatibility
+                        if (!signalFound && decrypted.size >= 4) {
+                            if (decrypted[0] == 0xFF.toByte() && decrypted[1] == 0xFF.toByte() && 
+                                decrypted[2] == 0x00.toByte() && decrypted[3] == 0x00.toByte()) {
+                                signalFound = true
+                                android.util.Log.d("AudioStreamer", "4-byte end call signal found at buffer start")
+                            }
+                        }
+                    }
+                    
+                    if (signalDetectionEnabled) {
+                        readsAfterEnable++
+                    }
+                    
+                    // Require 3 consecutive signal detections to avoid false positives
+                    if (signalFound) {
+                        consecutiveSignalCount++
+                        android.util.Log.d("AudioStreamer", "Signal detection count: $consecutiveSignalCount")
+                        if (consecutiveSignalCount >= 3 && !terminationInitiated) {
+                            terminationInitiated = true
+                            android.util.Log.d("AudioStreamer", "End call signal confirmed - terminating call")
+                            onEndCallReceived()
+                            break
+                        }
+                    } else {
+                        // Reset counter if no signal found
+                        if (consecutiveSignalCount > 0) {
+                            android.util.Log.d("AudioStreamer", "Signal detection reset")
+                            consecutiveSignalCount = 0
+                        }
+                    }
+                    
                     if (decryptEnabled) {
                         // Play decrypted audio - no delay needed in earpiece mode
                         player.write(decrypted, 0, decrypted.size)
@@ -165,7 +232,12 @@ class AudioStreamer(
                 }
             }
         } catch (e: IOException) {
-            // socket closed or read error - exit loop
+            // Any IOException during an active call is treated as end call signal
+            android.util.Log.d("AudioStreamer", "IOException in receiveAndPlay: ${e.message} - treating as end call")
+            if (!terminationInitiated) {
+                terminationInitiated = true
+                onEndCallReceived()
+            }
         } finally {
             try { player.stop() } catch (_: Exception) {}
         }
@@ -173,6 +245,32 @@ class AudioStreamer(
 
     fun stop() {
         running = false
+        
+        // Send a final end call signal before closing streams
+        try {
+            // Use a distinctive signal pattern (32 bytes) with alternating high/low values
+            val endCallSignal = ByteArray(32)
+            for (i in 0..31) {
+                endCallSignal[i] = if (i % 2 == 0) 0xAA.toByte() else 0x55.toByte()
+            }
+            btOut.write(endCallSignal)
+            btOut.flush()
+            android.util.Log.d("AudioStreamer", "Final end call signal sent (32 bytes alternating pattern) before closing")
+        } catch (e: Exception) {
+            android.util.Log.w("AudioStreamer", "Failed to send final end call signal: ${e.message}")
+        }
+        
+        // Small delay to ensure signal is sent
+        try {
+            Thread.sleep(200)
+        } catch (e: Exception) {}
+        
+        // Close output stream first to signal end of call to remote side
+        try {
+            btOut.close()
+        } catch (e: Exception) {
+            android.util.Log.w("AudioStreamer", "Error closing output stream: ${e.message}")
+        }
         
         // Release audio effects
         try {
@@ -196,17 +294,11 @@ class AudioStreamer(
         recorder.release()
         player.release()
         rawIn.close()
-        btOut.close()
     }
     
     fun sendEndCallSignal() {
-        try {
-            val endCallSignal = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0x00.toByte(), 0x00.toByte())
-            btOut.write(endCallSignal)
-            btOut.flush()
-        } catch (e: Exception) {
-            android.util.Log.w("AudioStreamer", "Failed to send end call signal: ${e.message}")
-        }
+        // Signal is now sent by stop() method
+        android.util.Log.d("AudioStreamer", "sendEndCallSignal called - signal handled by stop()")
     }
     
     // No explicit setter needed; flip decryptEnabled to toggle decryption in-flight

@@ -103,6 +103,7 @@ class BluetoothAudioServer(
     // Create AudioStreamer with input rawIn and decryption cipher, encrypted output
     audioStreamer = AudioStreamer(context, rawIn, decryptCipher, cipherOut) {
         // End call signal received - notify Flutter
+        android.util.Log.d("BluetoothAudioServer", "End call signal received, notifying Flutter")
         eventCallback("onCallEnded", null)
     }
     // Set initial decryption mode
@@ -118,13 +119,8 @@ class BluetoothAudioServer(
     }
     
     fun sendEndCallSignal() {
-        try {
-            // Send signal directly through the AudioStreamer's output stream if available
-            audioStreamer?.sendEndCallSignal()
-        } catch (e: Exception) {
-            // Ignore errors when sending end call signal
-            android.util.Log.w("BluetoothAudioServer", "Failed to send end call signal: ${e.message}")
-        }
+        // Signal is now sent by AudioStreamer.stop()
+        android.util.Log.d("BluetoothAudioServer", "End call signal handled by AudioStreamer.stop()")
     }
     
     // Toggle decryption at runtime

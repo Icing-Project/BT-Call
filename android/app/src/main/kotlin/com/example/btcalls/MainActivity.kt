@@ -158,18 +158,8 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "endCall" -> {
-                    // Send end call signal to remote device before stopping
-                    try {
-                        server?.sendEndCallSignal()
-                        client?.sendEndCallSignal()
-                        
-                        // Add a small delay to ensure signal is sent
-                        Thread.sleep(100)
-                    } catch (e: Exception) {
-                        android.util.Log.w("MainActivity", "Error sending end call signal: ${e.message}")
-                    }
-                    
-                    // Then stop the connection
+                    android.util.Log.d("MainActivity", "endCall method called")
+                    // Stop the connection - closing the stream will signal end of call to remote side
                     server?.stop()
                     client?.stop()
                     
