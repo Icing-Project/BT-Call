@@ -24,6 +24,7 @@ import kotlin.concurrent.thread
 class BluetoothAudioClient(
     private val context: Context,
     private val decryptEnabled: Boolean,
+    private val encryptEnabled: Boolean,
     private val eventCallback: (method: String, arg: Any?) -> Unit
 ) {
     private val SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
@@ -99,12 +100,13 @@ class BluetoothAudioClient(
     // Wrap output stream for encryption
     val cipherOut = CipherOutputStream(rawOut, encryptCipher)
     // Create AudioStreamer with rawIn input, decryptCipher, encrypted output
-    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, cipherOut) {
+    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, rawOut, cipherOut, encryptCipher) {
         // End call signal received - notify Flutter
         android.util.Log.d("BluetoothAudioClient", "End call signal received, notifying Flutter")
         eventCallback("onCallEnded", null)
     }
     audioStreamer?.decryptEnabled = decryptEnabled
+    audioStreamer?.encryptEnabled = encryptEnabled
         audioStreamer!!.start()
     }
 
@@ -122,5 +124,10 @@ class BluetoothAudioClient(
     // Toggle decryption display at runtime
     fun toggleDecryption(enabled: Boolean) {
         audioStreamer?.decryptEnabled = enabled
+    }
+    
+    // Toggle encryption at runtime
+    fun toggleEncryption(enabled: Boolean) {
+        audioStreamer?.encryptEnabled = enabled
     }
 }

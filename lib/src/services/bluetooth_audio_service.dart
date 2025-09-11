@@ -48,8 +48,8 @@ class BluetoothAudioService {
     _instance = BluetoothAudioService(fsk: modem);
   }
 
-  Future<void> startServer({required bool decrypt}) async {
-    await _channel.invokeMethod('startServer', {'decrypt': decrypt});
+  Future<void> startServer({required bool decrypt, required bool encrypt}) async {
+    await _channel.invokeMethod('startServer', {'decrypt': decrypt, 'encrypt': encrypt});
   }
 
   Future<void> stop() async {
@@ -68,8 +68,8 @@ class BluetoothAudioService {
     await _channel.invokeMethod('stopScan');
   }
 
-  Future<void> connectToDevice(String address, {required bool decrypt}) async {
-    await _channel.invokeMethod('startClient', {'macAddress': address, 'decrypt': decrypt});
+  Future<void> connectToDevice(String address, {required bool decrypt, required bool encrypt}) async {
+    await _channel.invokeMethod('startClient', {'macAddress': address, 'decrypt': decrypt, 'encrypt': encrypt});
   }
   
   /// Send a payload over 4-FSK: modulate then invoke native send.
@@ -83,6 +83,16 @@ class BluetoothAudioService {
      // Toggle decryption mid-stream on native side
      try {
        await _channel.invokeMethod('setDecrypt', {'decrypt': decrypt});
+     } catch (_) {
+       // If native doesn't support, ignore
+     }
+   }
+   
+   /// Update encryption mode on the native side dynamically
+   Future<void> updateEncrypt(bool encrypt) async {
+     // Toggle encryption mid-stream on native side
+     try {
+       await _channel.invokeMethod('setEncrypt', {'encrypt': encrypt});
      } catch (_) {
        // If native doesn't support, ignore
      }

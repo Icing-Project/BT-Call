@@ -185,22 +185,40 @@ class _CallScreenState extends State<CallScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 margin: const EdgeInsets.symmetric(horizontal: 48),
                 decoration: BoxDecoration(
-                  color: btProvider.decryptEnabled ? Colors.green[900] : Colors.orange[900],
+                  color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                      ? Colors.green[900] 
+                      : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                          ? Colors.yellow[900] 
+                          : Colors.orange[900],
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      btProvider.decryptEnabled ? FontAwesomeIcons.shield : FontAwesomeIcons.triangleExclamation,
-                      color: btProvider.decryptEnabled ? Colors.green[300] : Colors.orange[300],
+                      (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                          ? FontAwesomeIcons.shield 
+                          : FontAwesomeIcons.triangleExclamation,
+                      color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                          ? Colors.green[300] 
+                          : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                              ? Colors.yellow[300] 
+                              : Colors.orange[300],
                       size: 16,
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      btProvider.decryptEnabled ? 'Audio Encrypted' : 'Audio Not Encrypted',
+                      (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                          ? 'Audio Encrypted' 
+                          : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                              ? 'Partial Encryption' 
+                              : 'Audio Not Encrypted',
                       style: TextStyle(
-                        color: btProvider.decryptEnabled ? Colors.green[300] : Colors.orange[300],
+                        color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                            ? Colors.green[300] 
+                            : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                                ? Colors.yellow[300] 
+                                : Colors.orange[300],
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
@@ -213,10 +231,21 @@ class _CallScreenState extends State<CallScreen> {
               
               // Control buttons
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 40),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
+                    // Encrypt toggle button
+                    _buildCallButton(
+                      icon: btProvider.encryptEnabled 
+                          ? FontAwesomeIcons.key 
+                          : FontAwesomeIcons.unlock,
+                      backgroundColor: btProvider.encryptEnabled 
+                          ? Colors.blue[600]! 
+                          : Colors.grey[600]!,
+                      onPressed: () => btProvider.toggleEncrypt(!btProvider.encryptEnabled),
+                    ),
+                    
                     // Decrypt toggle button
                     _buildCallButton(
                       icon: btProvider.decryptEnabled 

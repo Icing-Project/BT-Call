@@ -10,6 +10,7 @@ class BluetoothProvider extends ChangeNotifier {
   List<Device> _devices = [];
   String _status = 'idle';
   bool _decryptEnabled = true;
+  bool _encryptEnabled = true;
   final Set<String> _seen = {};
   
   // Connected device info
@@ -18,6 +19,7 @@ class BluetoothProvider extends ChangeNotifier {
   List<Device> get devices => _devices;
   String get status => _status;
   bool get decryptEnabled => _decryptEnabled;
+  bool get encryptEnabled => _encryptEnabled;
   Device? get connectedDevice => _connectedDevice;
   bool get isConnected => _status == 'connected' && _connectedDevice != null;
 
@@ -82,7 +84,7 @@ class BluetoothProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _service.startServer(decrypt: _decryptEnabled);
+    await _service.startServer(decrypt: _decryptEnabled, encrypt: _encryptEnabled);
   }
 
   Future<void> stopServer() async {
@@ -124,7 +126,7 @@ class BluetoothProvider extends ChangeNotifier {
     );
     _connectedDevice = device;
     notifyListeners();
-    await _service.connectToDevice(address, decrypt: _decryptEnabled);
+    await _service.connectToDevice(address, decrypt: _decryptEnabled, encrypt: _encryptEnabled);
   }
   
   Future<void> disconnect() async {
@@ -149,6 +151,13 @@ class BluetoothProvider extends ChangeNotifier {
     _decryptEnabled = value;
     // Notify native layer to update decryption mode dynamically
     _service.updateDecrypt(value);
+    notifyListeners();
+  }
+  
+  void toggleEncrypt(bool value) {
+    _encryptEnabled = value;
+    // Notify native layer to update encryption mode dynamically
+    _service.updateEncrypt(value);
     notifyListeners();
   }
 }

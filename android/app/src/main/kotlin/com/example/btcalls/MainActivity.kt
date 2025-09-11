@@ -83,7 +83,8 @@ class MainActivity : FlutterActivity() {
                     }
                     startActivity(discoverIntent)
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
-                    server = BluetoothAudioServer(this@MainActivity, decrypt) { method, arg ->
+                    val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt) { method, arg ->
                         runOnUiThread {
                             methodChannel.invokeMethod(method, arg)
                         }
@@ -106,7 +107,8 @@ class MainActivity : FlutterActivity() {
                     }
                     val mac = call.argument<String>("macAddress")!!
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
-                    client = BluetoothAudioClient(this@MainActivity, decrypt) { method, arg ->
+                    val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt) { method, arg ->
                         runOnUiThread {
                             methodChannel.invokeMethod(method, arg)
                         }
@@ -157,6 +159,13 @@ class MainActivity : FlutterActivity() {
                     client?.toggleDecryption(decrypt)
                     result.success(null)
                 }
+                "setEncrypt" -> {
+                    // Toggle encryption mid-stream
+                    val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    server?.toggleEncryption(encrypt)
+                    client?.toggleEncryption(encrypt)
+                    result.success(null)
+                }
                 "endCall" -> {
                     android.util.Log.d("MainActivity", "endCall method called")
                     // Stop the connection - closing the stream will signal end of call to remote side
@@ -199,7 +208,8 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "startServer" -> {
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
-                    server = BluetoothAudioServer(this@MainActivity, decrypt) { method, arg ->
+                    val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt) { method, arg ->
                         runOnUiThread { methodChannel.invokeMethod(method, arg) }
                     }
                     server?.startServer()
@@ -208,7 +218,8 @@ class MainActivity : FlutterActivity() {
                 "startClient" -> {
                     val mac = call.argument<String>("macAddress")!!
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
-                    client = BluetoothAudioClient(this@MainActivity, decrypt) { method, arg ->
+                    val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt) { method, arg ->
                         runOnUiThread { methodChannel.invokeMethod(method, arg) }
                     }
                     client?.startClient(mac)

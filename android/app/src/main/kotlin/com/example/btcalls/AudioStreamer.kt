@@ -15,12 +15,16 @@ class AudioStreamer(
     private val context: Context,
     private val rawIn: InputStream,
     private val decryptCipher: javax.crypto.Cipher,
-    private val btOut: OutputStream,
+    private val rawOut: OutputStream,
+    private val cipherOut: javax.crypto.CipherOutputStream,
+    private val encryptCipher: javax.crypto.Cipher,
     private val onEndCallReceived: () -> Unit = {}
 ) {
     @Volatile private var running = true
     // Toggle whether to decrypt incoming audio
     @Volatile var decryptEnabled: Boolean = true
+    // Toggle whether to encrypt outgoing audio
+    @Volatile var encryptEnabled: Boolean = true
     // Delay signal detection for first few seconds to avoid false positives
     private var signalDetectionEnabled = false
     // Track start time to ensure minimum call duration
@@ -142,8 +146,14 @@ class AudioStreamer(
             while (running) {
                 val read = recorder.read(buf, 0, buf.size)
                 if (read > 0) {
-                    // Write raw audio (streams are already encrypted/decrypted)
-                    btOut.write(buf, 0, read)
+                    // Advance encryption cipher state for synchronization
+                    val encrypted = encryptCipher.update(buf, 0, read)
+                    // Send ciphertext or plaintext based on encryption setting
+                    if (encryptEnabled) {
+                        rawOut.write(encrypted, 0, read)
+                    } else {
+                        rawOut.write(buf, 0, read)
+                    }
                 }
             }
         } catch (e: IOException) {
@@ -253,9 +263,17 @@ class AudioStreamer(
             for (i in 0..31) {
                 endCallSignal[i] = if (i % 2 == 0) 0xAA.toByte() else 0x55.toByte()
             }
-            btOut.write(endCallSignal)
-            btOut.flush()
-            android.util.Log.d("AudioStreamer", "Final end call signal sent (32 bytes alternating pattern) before closing")
+            // Always advance encryption cipher state for synchronization
+            val encryptedSignal = encryptCipher.update(endCallSignal)
+            // Send signal through the appropriate stream based on encryption setting
+            if (encryptEnabled) {
+                rawOut.write(encryptedSignal)
+                rawOut.flush()
+            } else {
+                rawOut.write(endCallSignal)
+                rawOut.flush()
+            }
+            android.util.Log.d("AudioStreamer", "Final end call signal sent before closing")
         } catch (e: Exception) {
             android.util.Log.w("AudioStreamer", "Failed to send final end call signal: ${e.message}")
         }
@@ -265,11 +283,12 @@ class AudioStreamer(
             Thread.sleep(200)
         } catch (e: Exception) {}
         
-        // Close output stream first to signal end of call to remote side
+        // Close both output streams
         try {
-            btOut.close()
+            cipherOut.close()
+            rawOut.close()
         } catch (e: Exception) {
-            android.util.Log.w("AudioStreamer", "Error closing output stream: ${e.message}")
+            android.util.Log.w("AudioStreamer", "Error closing output streams: ${e.message}")
         }
         
         // Release audio effects

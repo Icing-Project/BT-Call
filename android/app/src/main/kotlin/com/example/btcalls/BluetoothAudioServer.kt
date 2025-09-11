@@ -24,6 +24,7 @@ import java.security.SecureRandom
 class BluetoothAudioServer(
     private val context: Context,
     private val decryptEnabled: Boolean,
+    private val encryptEnabled: Boolean,
     private val eventCallback: (method: String, arg: Any?) -> Unit
 ) {
     private val SERVICE_NAME = "BTCallsService"
@@ -101,13 +102,14 @@ class BluetoothAudioServer(
     // Wrap output stream for encryption
     val cipherOut = CipherOutputStream(rawOut, encryptCipher)
     // Create AudioStreamer with input rawIn and decryption cipher, encrypted output
-    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, cipherOut) {
+    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, rawOut, cipherOut, encryptCipher) {
         // End call signal received - notify Flutter
         android.util.Log.d("BluetoothAudioServer", "End call signal received, notifying Flutter")
         eventCallback("onCallEnded", null)
     }
-    // Set initial decryption mode
+    // Set initial decryption and encryption modes
     audioStreamer?.decryptEnabled = decryptEnabled
+    audioStreamer?.encryptEnabled = encryptEnabled
         audioStreamer!!.start()
     }
 
@@ -126,5 +128,10 @@ class BluetoothAudioServer(
     // Toggle decryption at runtime
     fun toggleDecryption(enabled: Boolean) {
         audioStreamer?.decryptEnabled = enabled
+    }
+    
+    // Toggle encryption at runtime
+    fun toggleEncryption(enabled: Boolean) {
+        audioStreamer?.encryptEnabled = enabled
     }
 }
