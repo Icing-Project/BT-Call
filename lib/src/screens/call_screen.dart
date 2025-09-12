@@ -264,16 +264,15 @@ class _CallScreenState extends State<CallScreen> {
                       onPressed: () => _hangUp(context),
                     ),
                     
-                    // Speaker button (placeholder for future)
+                    // Speaker button
                     _buildCallButton(
-                      icon: FontAwesomeIcons.volumeHigh,
-                      backgroundColor: Colors.grey[800]!,
-                      onPressed: () {
-                        // TODO: Implement speaker toggle
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Speaker functionality not yet implemented')),
-                        );
-                      },
+                      icon: btProvider.speakerOn
+                          ? FontAwesomeIcons.volumeHigh
+                          : FontAwesomeIcons.volumeXmark,
+                      backgroundColor: btProvider.speakerOn
+                          ? Colors.blue[600]! 
+                          : Colors.grey[800]!,
+                      onPressed: () => btProvider.toggleSpeaker(!btProvider.speakerOn),
                     ),
                   ],
                 ),

@@ -108,4 +108,13 @@ class BluetoothAudioService {
     Future<void> stopCall() async {
       await _channel.invokeMethod('stopCall');
     }
+
+  /// Update speakerphone mode on the native side dynamically
+  Future<void> updateSpeaker(bool speaker) async {
+    try {
+      await _channel.invokeMethod('setSpeaker', {'speaker': speaker});
+    } catch (_) {
+      // If native doesn't support, ignore
+    }
+  }
 }

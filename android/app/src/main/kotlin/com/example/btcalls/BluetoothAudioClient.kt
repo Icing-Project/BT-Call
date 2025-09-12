@@ -130,4 +130,9 @@ class BluetoothAudioClient(
     fun toggleEncryption(enabled: Boolean) {
         audioStreamer?.encryptEnabled = enabled
     }
+
+    // Toggle speakerphone at runtime
+    fun toggleSpeaker(enabled: Boolean) {
+        audioStreamer?.toggleSpeaker(enabled)
+    }
 }

@@ -166,6 +166,13 @@ class MainActivity : FlutterActivity() {
                     client?.toggleEncryption(encrypt)
                     result.success(null)
                 }
+                "setSpeaker" -> {
+                    // Toggle speakerphone mid-call
+                    val enabled = call.argument<Boolean>("speaker") ?: false
+                    server?.toggleSpeaker(enabled)
+                    client?.toggleSpeaker(enabled)
+                    result.success(null)
+                }
                 "endCall" -> {
                     android.util.Log.d("MainActivity", "endCall method called")
                     // Stop the connection - closing the stream will signal end of call to remote side

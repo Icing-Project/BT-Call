@@ -20,6 +20,8 @@ class BluetoothProvider extends ChangeNotifier {
   String get status => _status;
   bool get decryptEnabled => _decryptEnabled;
   bool get encryptEnabled => _encryptEnabled;
+  bool _speakerOn = false;
+  bool get speakerOn => _speakerOn;
   Device? get connectedDevice => _connectedDevice;
   bool get isConnected => _status == 'connected' && _connectedDevice != null;
 
@@ -158,6 +160,12 @@ class BluetoothProvider extends ChangeNotifier {
     _encryptEnabled = value;
     // Notify native layer to update encryption mode dynamically
     _service.updateEncrypt(value);
+    notifyListeners();
+  }
+
+  void toggleSpeaker(bool value) {
+    _speakerOn = value;
+    _service.updateSpeaker(value);
     notifyListeners();
   }
 }

@@ -37,6 +37,10 @@ class AudioStreamer(
     private var terminationInitiated = false
 
     private val SAMPLE_RATE = 16000
+    // Maximum latency cap in ms for playback
+    private val MAX_LATENCY_MS = 500
+    // Maximum buffered bytes (2 bytes per sample) to maintain MAX_LATENCY_MS
+    private val MAX_LATENCY_BYTES = SAMPLE_RATE * 2 * MAX_LATENCY_MS / 1000
     private val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
     private val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
     private val ENCODING = AudioFormat.ENCODING_PCM_16BIT
@@ -176,6 +180,23 @@ class AudioStreamer(
             
             val buf = ByteArray(minBuf * 2) // Use larger buffer to match recorder
             while (running) {
+                // Drop old buffered data to limit latency, syncing cipher state
+                try {
+                    val available = rawIn.available()
+                    val toDrop = available - MAX_LATENCY_BYTES
+                    if (toDrop > 0) {
+                        var remaining = toDrop
+                        val dropBuf = ByteArray(minOf(buf.size, remaining))
+                        while (remaining > 0) {
+                            val r = rawIn.read(dropBuf, 0, minOf(dropBuf.size, remaining))
+                            if (r <= 0) break
+                            // Advance decryption cipher state for skipped bytes
+                            decryptCipher.update(dropBuf, 0, r)
+                            remaining -= r
+                        }
+                    }
+                } catch (_: IOException) {
+                }
                 // Always read ciphertext from rawIn
                 val count = rawIn.read(buf)
                 if (count > 0) {
@@ -321,4 +342,14 @@ class AudioStreamer(
     }
     
     // No explicit setter needed; flip decryptEnabled to toggle decryption in-flight
+    
+    // Allows toggling speakerphone on/off at runtime
+    fun toggleSpeaker(enabled: Boolean) {
+        try {
+            audioManager.isSpeakerphoneOn = enabled
+            android.util.Log.d("AudioStreamer", "Speakerphone set to $enabled")
+        } catch (e: Exception) {
+            android.util.Log.w("AudioStreamer", "Failed to toggle speakerphone: ${e.message}")
+        }
+    }
 }
