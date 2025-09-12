@@ -75,6 +75,7 @@ class BluetoothProvider extends ChangeNotifier {
 
   Future<void> startServer() async {
     _status = 'starting server';
+    _resetCallSettingsToDefaults();
     notifyListeners();
     final statuses = await [
       Permission.microphone,
@@ -121,6 +122,7 @@ class BluetoothProvider extends ChangeNotifier {
 
   Future<void> connectToDevice(String address) async {
     _status = 'connecting';
+    _resetCallSettingsToDefaults();
     // Find the device by address to store connected device info
     final device = _devices.firstWhere(
       (d) => d.address == address, 
@@ -147,6 +149,13 @@ class BluetoothProvider extends ChangeNotifier {
     await _service.endCall();
     _status = 'call ended';
     notifyListeners();
+  }
+
+  /// Reset call settings to their default values when starting a new call
+  void _resetCallSettingsToDefaults() {
+    _decryptEnabled = true;   // Decryption enabled by default
+    _encryptEnabled = true;   // Encryption enabled by default  
+    _speakerOn = false;       // Speaker disabled by default
   }
 
   void toggleDecrypt(bool value) {
