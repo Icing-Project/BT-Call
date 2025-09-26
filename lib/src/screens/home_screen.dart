@@ -40,6 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
   
   void _onConnectionChanged() {
     final btProvider = context.read<BluetoothProvider>();
+    _scheduleMessageFlush(btProvider);
     
     // Navigate to call screen when connected
     if (btProvider.isConnected && btProvider.connectedDevice != null) {
@@ -53,6 +54,43 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
   }
+    void _scheduleMessageFlush(BluetoothProvider provider) {
+      if (!mounted || !provider.hasPendingMessages) return;
+      final messages = provider.takeMessageBatch();
+      if (messages.isEmpty) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final theme = Theme.of(context);
+        for (var i = 0; i < messages.length; i++) {
+          final message = messages[i];
+          Future.delayed(Duration(milliseconds: i * 2600), () {
+            if (!mounted) return;
+            Color background;
+            switch (message.type) {
+              case UXMessageType.info:
+                background = theme.colorScheme.primary;
+                break;
+              case UXMessageType.warning:
+                background = theme.colorScheme.secondary;
+                break;
+              case UXMessageType.error:
+                background = theme.colorScheme.error;
+                break;
+            }
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text(message.text),
+                  backgroundColor: background,
+                  behavior: SnackBarBehavior.floating,
+                  duration: const Duration(milliseconds: 2200),
+                ),
+              );
+          });
+        }
+      });
+    }
+
   @override
   void dispose() {
     _manualController.dispose();
@@ -98,15 +136,26 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('Cancel'),
                 ),
-                TextButton(
-                  onPressed: _isMacValid
-                      ? () {
-                          final btProvider = context.read<BluetoothProvider>();
-                          btProvider.connectToDevice(_manualController.text.trim());
-                          Navigator.of(context).pop();
-                        }
-                      : null,
-                  child: const Text('Connect'),
+                Consumer<BluetoothProvider>(
+                  builder: (context, provider, _) {
+                    final isBusy = !provider.canInitiateConnection;
+                    final shouldEnable = _isMacValid && !isBusy;
+                    return TextButton(
+                      onPressed: shouldEnable
+                          ? () {
+                              provider.connectToDevice(_manualController.text.trim());
+                              Navigator.of(context).pop();
+                            }
+                          : null,
+                      child: isBusy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Connect'),
+                    );
+                  },
                 ),
               ],
             );
@@ -120,6 +169,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final btProvider = context.watch<BluetoothProvider>();
     final themeProvider = context.watch<ThemeProvider>();
+    _scheduleMessageFlush(btProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -200,7 +250,9 @@ class _HomeScreenState extends State<HomeScreen> {
               childAspectRatio: 3,
               children: [
                 ElevatedButton.icon(
-                  onPressed: btProvider.startServer,
+                  onPressed: btProvider.canStartServer
+                      ? () => btProvider.startServer()
+                      : null,
                   icon: const Icon(FontAwesomeIcons.server),
                   label: const Text('Start Server'),
                   style: ElevatedButton.styleFrom(
@@ -209,7 +261,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 ElevatedButton.icon(
-                  onPressed: btProvider.stopServer,
+                  onPressed: btProvider.canStopServer
+                      ? () => btProvider.stopServer()
+                      : null,
                   icon: const Icon(FontAwesomeIcons.stop),
                   label: const Text('Stop Server'),
                   style: ElevatedButton.styleFrom(
@@ -218,7 +272,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 ElevatedButton.icon(
-                  onPressed: btProvider.startScan,
+                  onPressed: btProvider.canStartScan
+                      ? () => btProvider.startScan()
+                      : null,
                   icon: const Icon(FontAwesomeIcons.magnifyingGlass),
                   label: const Text('Start Scan'),
                   style: ElevatedButton.styleFrom(
@@ -227,7 +283,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 ElevatedButton.icon(
-                  onPressed: btProvider.stopScan,
+                  onPressed: btProvider.canStopScan
+                      ? () => btProvider.stopScan()
+                      : null,
                   icon: const Icon(FontAwesomeIcons.stop),
                   label: const Text('Stop Scan'),
                   style: ElevatedButton.styleFrom(
@@ -269,8 +327,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         title: Text(device.name),
                         subtitle: Text(device.address),
                         trailing: ElevatedButton(
-                          onPressed: () => btProvider.connectToDevice(device.address),
-                          child: const Text('Connect'),
+                          onPressed: btProvider.canInitiateConnection
+                              ? () => btProvider.connectToDevice(device.address)
+                              : null,
+                          child: btProvider.isConnecting &&
+                                  btProvider.connectedDevice?.address == device.address
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Text('Connect'),
                         ),
                       ),
                     ),

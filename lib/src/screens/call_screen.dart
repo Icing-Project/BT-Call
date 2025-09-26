@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
@@ -243,7 +244,7 @@ class _CallScreenState extends State<CallScreen> {
                       backgroundColor: btProvider.encryptEnabled 
                           ? Colors.blue[600]! 
                           : Colors.grey[600]!,
-                      onPressed: () => btProvider.toggleEncrypt(!btProvider.encryptEnabled),
+                      onPressed: () => _performSelection(() => btProvider.toggleEncrypt(!btProvider.encryptEnabled)),
                     ),
                     
                     // Decrypt toggle button
@@ -254,14 +255,14 @@ class _CallScreenState extends State<CallScreen> {
                       backgroundColor: btProvider.decryptEnabled 
                           ? Colors.green[600]! 
                           : Colors.orange[600]!,
-                      onPressed: () => btProvider.toggleDecrypt(!btProvider.decryptEnabled),
+                      onPressed: () => _performSelection(() => btProvider.toggleDecrypt(!btProvider.decryptEnabled)),
                     ),
                     
                     // Hang up button
                     _buildCallButton(
                       icon: FontAwesomeIcons.phoneSlash,
                       backgroundColor: Colors.red[600]!,
-                      onPressed: () => _hangUp(context),
+                      onPressed: () => _performDestructive(() => _hangUp(context)),
                     ),
                     
                     // Speaker button
@@ -272,7 +273,7 @@ class _CallScreenState extends State<CallScreen> {
                       backgroundColor: btProvider.speakerOn
                           ? Colors.blue[600]! 
                           : Colors.grey[800]!,
-                      onPressed: () => btProvider.toggleSpeaker(!btProvider.speakerOn),
+                      onPressed: () => _performSelection(() => btProvider.toggleSpeaker(!btProvider.speakerOn)),
                     ),
                   ],
                 ),
@@ -284,6 +285,16 @@ class _CallScreenState extends State<CallScreen> {
         ),
       ),
     );
+  }
+
+  void _performSelection(VoidCallback action) {
+    HapticFeedback.selectionClick();
+    action();
+  }
+
+  void _performDestructive(VoidCallback action) {
+    HapticFeedback.mediumImpact();
+    action();
   }
 
   Widget _buildCallButton({
