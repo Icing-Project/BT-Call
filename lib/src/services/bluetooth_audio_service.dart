@@ -48,8 +48,16 @@ class BluetoothAudioService {
     _instance = BluetoothAudioService(fsk: modem);
   }
 
-  Future<void> startServer({required bool decrypt, required bool encrypt}) async {
-    await _channel.invokeMethod('startServer', {'decrypt': decrypt, 'encrypt': encrypt});
+  Future<void> startServer({
+    required bool decrypt,
+    required bool encrypt,
+    String? discoveryHint,
+  }) async {
+    await _channel.invokeMethod('startServer', {
+      'decrypt': decrypt,
+      'encrypt': encrypt,
+      if (discoveryHint != null && discoveryHint.isNotEmpty) 'discoveryHint': discoveryHint,
+    });
   }
 
   Future<void> stop() async {
@@ -70,6 +78,17 @@ class BluetoothAudioService {
 
   Future<void> connectToDevice(String address, {required bool decrypt, required bool encrypt}) async {
     await _channel.invokeMethod('startClient', {'macAddress': address, 'decrypt': decrypt, 'encrypt': encrypt});
+  }
+
+  Future<Map<String, String>> getLocalDeviceInfo() async {
+    final result = await _channel.invokeMapMethod<String, dynamic>('getLocalDeviceInfo');
+    if (result == null) {
+      return const {'name': '', 'address': ''};
+    }
+    return {
+      'name': (result['name'] ?? '') as String,
+      'address': (result['address'] ?? '') as String,
+    };
   }
   
   /// Send a payload over 4-FSK: modulate then invoke native send.

@@ -8,11 +8,15 @@ import '../providers/bluetooth_provider.dart';
 class CallScreen extends StatefulWidget {
   final String deviceName;
   final String deviceAddress;
+  final String? aliasSummary;
+  final String? publicKey;
 
   const CallScreen({
     Key? key,
     required this.deviceName,
     required this.deviceAddress,
+    this.aliasSummary,
+    this.publicKey,
   }) : super(key: key);
 
   @override
@@ -103,13 +107,39 @@ class _CallScreenState extends State<CallScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 4),
+                    if (widget.aliasSummary?.isNotEmpty == true)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4.0),
+                        child: Text(
+                          'Alias: ${widget.aliasSummary}',
+                          style: TextStyle(
+                            color: Colors.blue[200],
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                     Text(
-                      widget.deviceAddress,
+                        'Address (ephemeral): ${widget.deviceAddress}',
                       style: TextStyle(
                         color: Colors.grey[400],
                         fontSize: 14,
                       ),
                     ),
+                    if (widget.publicKey?.isNotEmpty == true)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4.0),
+                        child: Text(
+                          _shortenKey(widget.publicKey!),
+                          style: TextStyle(
+                            color: Colors.blue[200],
+                            fontSize: 13,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -359,5 +389,10 @@ class _CallScreenState extends State<CallScreen> {
     
     // Navigate back immediately
     Navigator.of(context).pop();
+  }
+
+  String _shortenKey(String key) {
+    if (key.length <= 16) return key;
+    return '${key.substring(0, 16)}…';
   }
 }

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'src/providers/bluetooth_provider.dart';
 import 'src/providers/theme_provider.dart';
+import 'src/providers/contacts_provider.dart';
 import 'src/theme/app_theme.dart';
 import 'src/screens/home_screen.dart';
 import 'src/services/four_fsk_service.dart';
@@ -28,7 +29,15 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => BluetoothProvider()),
+        ChangeNotifierProvider(create: (_) => ContactsProvider()),
+        ChangeNotifierProxyProvider<ContactsProvider, BluetoothProvider>(
+          create: (_) => BluetoothProvider(),
+          update: (_, contactsProvider, bluetoothProvider) {
+            final provider = bluetoothProvider ?? BluetoothProvider();
+            provider.attachContactsProvider(contactsProvider);
+            return provider;
+          },
+        ),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
       ],
       child: Consumer<ThemeProvider>(

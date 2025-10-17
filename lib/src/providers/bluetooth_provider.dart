@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/device.dart';
+import '../repositories/share_profile_repository.dart';
 import '../services/bluetooth_audio_service.dart';
+import 'contacts_provider.dart';
 
 enum UXMessageType { info, warning, error }
 
@@ -15,6 +17,7 @@ class UXMessage {
 
 class BluetoothProvider extends ChangeNotifier {
   final BluetoothAudioService _service = BluetoothAudioService.instance;
+  final ShareProfileRepository _shareProfileRepository = ShareProfileRepository();
 
   List<Device> _devices = [];
   String _status = 'idle';
@@ -26,6 +29,9 @@ class BluetoothProvider extends ChangeNotifier {
   bool _serverStarting = false;
   bool _serverActive = false;
   bool _isConnecting = false;
+  String? _cachedDiscoveryHint;
+  ContactsProvider? _contactsProvider;
+  final Map<String, String> _hintByAddress = {};
   
   // Connected device info
   Device? _connectedDevice;
@@ -53,6 +59,14 @@ class BluetoothProvider extends ChangeNotifier {
     BluetoothAudioService.setMethodCallHandler(_handleNativeCall);
   }
 
+  void attachContactsProvider(ContactsProvider provider) {
+    _contactsProvider = provider;
+  }
+
+  void refreshDiscoveryHint() {
+    _cachedDiscoveryHint = null;
+  }
+
   List<UXMessage> takeMessageBatch() {
     if (_messageQueue.isEmpty) return const [];
     final batch = List<UXMessage>.from(_messageQueue);
@@ -70,9 +84,15 @@ class BluetoothProvider extends ChangeNotifier {
         final args = call.arguments as Map;
         final name = args['name'] as String;
         final address = args['address'] as String;
+        final hint = (args['hint'] as String? ?? '').toUpperCase();
         if (!_seen.contains(address)) {
           _seen.add(address);
-          _devices.add(Device(name: name, address: address));
+          final device = Device(name: name, address: address, discoveryHint: hint);
+          _devices.add(device);
+          if (hint.isNotEmpty) {
+            _hintByAddress[address.toUpperCase()] = hint;
+            _maybeUpdateContactFromDiscovery(device);
+          }
           notifyListeners();
         }
         break;
@@ -81,7 +101,11 @@ class BluetoothProvider extends ChangeNotifier {
         final args = call.arguments as Map;
         final name = args['name'] as String;
         final address = args['address'] as String;
-        _connectedDevice = Device(name: name, address: address);
+        final hint = _hintByAddress[address.toUpperCase()] ?? '';
+        _connectedDevice = Device(name: name, address: address, discoveryHint: hint);
+        if (hint.isNotEmpty) {
+          _maybeUpdateContactFromDiscovery(_connectedDevice!);
+        }
         _status = 'connected';
         _isConnecting = false;
         _serverActive = true;
@@ -164,8 +188,13 @@ class BluetoothProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final hint = await _ensureDiscoveryHint();
     try {
-      await _service.startServer(decrypt: _decryptEnabled, encrypt: _encryptEnabled);
+      await _service.startServer(
+        decrypt: _decryptEnabled,
+        encrypt: _encryptEnabled,
+        discoveryHint: hint,
+      );
       _serverActive = true;
       _pushMessage('Server started. Waiting for incoming calls.');
     } on PlatformException catch (e) {
@@ -213,6 +242,7 @@ class BluetoothProvider extends ChangeNotifier {
     _status = 'scanning';
     _devices.clear();
     _seen.clear();
+    _hintByAddress.clear();
     notifyListeners();
     final statuses = await [
       Permission.location,
@@ -274,7 +304,10 @@ class BluetoothProvider extends ChangeNotifier {
     // Find the device by address to store connected device info
     final device = _devices.firstWhere(
       (d) => d.address == address, 
-      orElse: () => Device(name: 'Unknown Device', address: address)
+      orElse: () {
+        final hint = _hintByAddress[address.toUpperCase()] ?? '';
+        return Device(name: 'Unknown Device', address: address, discoveryHint: hint);
+      },
     );
     _connectedDevice = device;
     notifyListeners();
@@ -351,6 +384,27 @@ class BluetoothProvider extends ChangeNotifier {
     _decryptEnabled = true;   // Decryption enabled by default
     _encryptEnabled = true;   // Encryption enabled by default  
     _speakerOn = false;       // Speaker disabled by default
+  }
+
+  Future<String> _ensureDiscoveryHint() async {
+    if (_cachedDiscoveryHint != null && _cachedDiscoveryHint!.isNotEmpty) {
+      return _cachedDiscoveryHint!;
+    }
+    final hint = (await _shareProfileRepository.ensureDiscoveryHint()).toUpperCase();
+    _cachedDiscoveryHint = hint;
+    return hint;
+  }
+
+  void _maybeUpdateContactFromDiscovery(Device device) {
+    final provider = _contactsProvider;
+    final hint = device.discoveryHint.toUpperCase();
+    if (provider == null || hint.isEmpty) {
+      return;
+    }
+    provider.markContactSeenByHint(
+      discoveryHint: hint,
+      deviceName: device.name,
+    );
   }
 
   void toggleDecrypt(bool value) {

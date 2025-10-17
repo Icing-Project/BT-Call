@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>BTCalls uses Bluetooth to connect to nearby devices for secure calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is required to scan contact QR codes.</string>
 </dict>
 </plist>

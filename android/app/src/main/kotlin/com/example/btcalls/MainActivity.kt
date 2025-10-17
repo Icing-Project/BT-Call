@@ -31,6 +31,7 @@ class MainActivity : FlutterActivity() {
     // Invisible marker to append to device name for app discovery
     private val NAME_MARKER = "\u200B"  // zero-width space
     private val btAdapter: BluetoothAdapter? by lazy { BluetoothAdapter.getDefaultAdapter() }
+    private var originalAdapterName: String? = null
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         // Register receiver for Bluetooth device discovery
@@ -41,11 +42,12 @@ class MainActivity : FlutterActivity() {
                     device?.name?.let { fullName ->
                         // only include devices broadcasting our invisible marker
                         if (fullName.endsWith(NAME_MARKER)) {
-                            val displayName = fullName.removeSuffix(NAME_MARKER)
+                            val (displayName, hint) = parseNameAndHint(fullName)
                             runOnUiThread {
                                 methodChannel.invokeMethod("onDeviceFound", mapOf(
                                     "name" to displayName,
-                                    "address" to device.address
+                                    "address" to device.address,
+                                    "hint" to hint
                                 ))
                             }
                         }
@@ -74,9 +76,14 @@ class MainActivity : FlutterActivity() {
                         ActivityCompat.requestPermissions(this, perms.toTypedArray(), REQUEST_PERMISSIONS)
                         return@setMethodCallHandler
                     }
-                    // set adapter name with invisible marker for our app
-                    val baseName = btAdapter?.name ?: "Bluetooth"
-                    btAdapter?.name = baseName + NAME_MARKER
+                    val hint = call.argument<String>("discoveryHint") ?: ""
+                    val baseName = sanitizeAdapterName(btAdapter?.name)
+                    originalAdapterName = baseName
+                    try {
+                        btAdapter?.name = composeBroadcastName(baseName, hint)
+                    } catch (_: SecurityException) {
+                        // ignore if we cannot rename due to permission changes
+                    }
                     // request device to be discoverable for 5 minutes
                     val discoverIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
                         putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
@@ -119,6 +126,7 @@ class MainActivity : FlutterActivity() {
                 "stop" -> {
                     server?.stop()
                     client?.stop()
+                    restoreAdapterName()
                     // notify Flutter of stopped status
                     runOnUiThread {
                         methodChannel.invokeMethod("onStatus", "stopped")
@@ -178,6 +186,7 @@ class MainActivity : FlutterActivity() {
                     // Stop the connection - closing the stream will signal end of call to remote side
                     server?.stop()
                     client?.stop()
+                    restoreAdapterName()
                     
                     // notify Flutter of stopped status
                     runOnUiThread {
@@ -185,6 +194,23 @@ class MainActivity : FlutterActivity() {
                         methodChannel.invokeMethod("onCallEnded", null)
                     }
                     result.success(null)
+                }
+                "getLocalDeviceInfo" -> {
+                    val name = btAdapter?.name ?: ""
+                    var address = ""
+                    val hasConnectPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+                    } else {
+                        ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH) == PackageManager.PERMISSION_GRANTED
+                    }
+                    if (hasConnectPermission) {
+                        try {
+                            address = btAdapter?.address ?: ""
+                        } catch (_: SecurityException) {
+                            address = ""
+                        }
+                    }
+                    result.success(mapOf("name" to name, "address" to address))
                 }
                 else -> result.notImplemented()
             }
@@ -198,6 +224,56 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(scanReceiver) } catch (_: Exception) {}
+        restoreAdapterName()
+    }
+
+    private fun sanitizeAdapterName(current: String?): String {
+        if (current.isNullOrEmpty()) return "Bluetooth"
+        var sanitized = current.removeSuffix(NAME_MARKER)
+        val bracketIndex = sanitized.lastIndexOf(" [")
+        if (bracketIndex >= 0 && sanitized.endsWith(']')) {
+            val potentialHint = sanitized.substring(bracketIndex + 2, sanitized.length - 1)
+            if (isLikelyHint(potentialHint)) {
+                sanitized = sanitized.substring(0, bracketIndex)
+            }
+        }
+        return sanitized.trim()
+    }
+
+    private fun composeBroadcastName(base: String, hint: String): String {
+        val trimmedBase = base.trim()
+        return if (hint.isNotEmpty()) "$trimmedBase [$hint]$NAME_MARKER" else trimmedBase + NAME_MARKER
+    }
+
+    private fun parseNameAndHint(encoded: String): Pair<String, String> {
+        val trimmed = encoded.removeSuffix(NAME_MARKER)
+        val bracketIndex = trimmed.lastIndexOf(" [")
+        return if (bracketIndex >= 0 && trimmed.endsWith(']')) {
+            val hint = trimmed.substring(bracketIndex + 2, trimmed.length - 1).trim()
+            if (isLikelyHint(hint)) {
+                val name = trimmed.substring(0, bracketIndex).trim()
+                Pair(name, hint)
+            } else {
+                Pair(trimmed.trim(), "")
+            }
+        } else {
+            Pair(trimmed.trim(), "")
+        }
+    }
+
+    private fun isLikelyHint(candidate: String): Boolean {
+        if (candidate.length !in 4..16) return false
+        return candidate.all { it in 'A'..'Z' || it in '0'..'9' }
+    }
+
+    private fun restoreAdapterName() {
+        val baseName = originalAdapterName ?: return
+        try {
+            btAdapter?.name = baseName
+        } catch (_: SecurityException) {
+            // ignore
+        }
+        originalAdapterName = null
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -216,6 +292,18 @@ class MainActivity : FlutterActivity() {
                 "startServer" -> {
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
                     val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    val hint = call.argument<String>("discoveryHint") ?: ""
+                    val baseName = sanitizeAdapterName(btAdapter?.name)
+                    originalAdapterName = baseName
+                    try {
+                        btAdapter?.name = composeBroadcastName(baseName, hint)
+                    } catch (_: SecurityException) {
+                        // ignore
+                    }
+                    val discoverIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
+                        putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
+                    }
+                    startActivity(discoverIntent)
                     server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt) { method, arg ->
                         runOnUiThread { methodChannel.invokeMethod(method, arg) }
                     }

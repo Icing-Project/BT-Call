@@ -3,10 +3,12 @@ import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../providers/bluetooth_provider.dart';
+import '../providers/contacts_provider.dart';
 import '../providers/theme_provider.dart';
 import '../models/device.dart';
-import 'key_management.dart';
 import 'call_screen.dart';
+import 'contacts_screen.dart';
+import 'key_management.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -44,11 +46,22 @@ class _HomeScreenState extends State<HomeScreen> {
     
     // Navigate to call screen when connected
     if (btProvider.isConnected && btProvider.connectedDevice != null) {
+      final contactsProvider = context.read<ContactsProvider>();
+      final device = btProvider.connectedDevice!;
+      final matches = device.discoveryHint.isNotEmpty
+          ? contactsProvider.contactsForDiscoveryHint(device.discoveryHint)
+          : const [];
+      final aliasSummary = matches.isEmpty
+          ? null
+          : matches.map((contact) => contact.name).join(', ');
+      final keyPreview = matches.isEmpty ? '' : matches.first.publicKey;
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (context) => CallScreen(
-            deviceName: btProvider.connectedDevice!.name,
-            deviceAddress: btProvider.connectedDevice!.address,
+            deviceName: device.name,
+            deviceAddress: device.address,
+            aliasSummary: aliasSummary,
+            publicKey: keyPreview,
           ),
         ),
       );
@@ -168,6 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final btProvider = context.watch<BluetoothProvider>();
+    final contactsProvider = context.watch<ContactsProvider>();
     final themeProvider = context.watch<ThemeProvider>();
     _scheduleMessageFlush(btProvider);
 
@@ -190,12 +204,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     builder: (_) => const ManageKeysPage(),
                   ),
                 );
+              } else if (value == 'contacts') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ContactsScreen(),
+                  ),
+                );
               }
             },
             itemBuilder: (context) => [
               const PopupMenuItem<String>(
                 value: 'key_management',
                 child: Text('Key management'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'contacts',
+                child: Text('Contacts & sharing'),
               ),
             ],
           ),
@@ -315,6 +340,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 itemCount: btProvider.devices.length,
                 itemBuilder: (context, index) {
                   final Device device = btProvider.devices[index];
+                  final matches = device.discoveryHint.isNotEmpty
+                      ? contactsProvider.contactsForDiscoveryHint(device.discoveryHint)
+                      : const [];
+                  final aliasSummary = matches.isEmpty
+                      ? null
+                      : matches.map((contact) => contact.name).join(', ');
+                  final keyPreview = matches.isEmpty
+                      ? null
+                      : _shortenKey(matches.first.publicKey);
                   return AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeInOut,
@@ -325,7 +359,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: const Icon(FontAwesomeIcons.bluetooth, color: Colors.white),
                         ),
                         title: Text(device.name),
-                        subtitle: Text(device.address),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Address (ephemeral): ${device.address}'),
+                            if (aliasSummary != null)
+                              Text('Known as: $aliasSummary'),
+                            if (keyPreview != null)
+                              Text('Last key: $keyPreview'),
+                            if (device.discoveryHint.isNotEmpty)
+                              Text('Discovery code: ${device.discoveryHint}'),
+                          ],
+                        ),
                         trailing: ElevatedButton(
                           onPressed: btProvider.canInitiateConnection
                               ? () => btProvider.connectToDevice(device.address)
@@ -349,6 +394,12 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  String _shortenKey(String key) {
+    if (key.isEmpty) return 'Unknown';
+    if (key.length <= 12) return key;
+    return '${key.substring(0, 12)}…';
   }
 
 
