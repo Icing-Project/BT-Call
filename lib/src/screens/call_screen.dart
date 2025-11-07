@@ -121,7 +121,7 @@ class _CallScreenState extends State<CallScreen> {
                         ),
                       ),
                     Text(
-                        'Address (ephemeral): ${widget.deviceAddress}',
+                        'Address: ${widget.deviceAddress}',
                       style: TextStyle(
                         color: Colors.grey[400],
                         fontSize: 14,

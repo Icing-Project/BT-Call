@@ -362,11 +362,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Address (ephemeral): ${device.address}'),
-                            if (aliasSummary != null)
-                              Text('Known as: $aliasSummary'),
-                            if (keyPreview != null)
-                              Text('Last key: $keyPreview'),
+                            Text('Address: ${device.address}'),
+                            // if (aliasSummary != null)
+                            //   Text('Known as: $aliasSummary'),
+                            // if (keyPreview != null)
+                            //   Text('Last key: $keyPreview'),
                             if (device.discoveryHint.isNotEmpty)
                               Text('Discovery code: ${device.discoveryHint}'),
                           ],
