@@ -1,0 +1,26 @@
+name: nade_flutter
+description: NADE (Noise-encrypted Audio Data Exchange) - Secure voice over Bluetooth with E2E encryption
+version: 0.1.0
+homepage: https://github.com/Icing-Project/BT-Call
+
+environment:
+  sdk: ^3.9.0
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.icing.nade
+        pluginClass: NadePlugin
+      windows:
+        pluginClass: NadePlugin

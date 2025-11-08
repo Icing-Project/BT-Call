@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- NADE Plugin Permissions -->
+    
+    <!-- Required for audio recording -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    
+    <!-- Required for Bluetooth communication -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    
+    <!-- Android 12+ Bluetooth permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    
+    <!-- Optional: for discovering nearby devices -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    
+    <!-- Feature declarations -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="true" />
+</manifest>
