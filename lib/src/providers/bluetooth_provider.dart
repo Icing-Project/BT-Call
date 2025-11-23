@@ -634,14 +634,14 @@ class BluetoothProvider extends ChangeNotifier {
   }
 
   Future<void> _stopNadeSession() async {
-    if (!_nadeSessionActive) {
-      _callRole = _CallRole.none;
-      _sessionPeerPublicKey = '';
-      return;
+    final shouldInvokeStop = _nadeSessionActive || _nadeEverInitialized;
+    if (shouldInvokeStop) {
+      try {
+        await Nade.stop();
+      } catch (_) {
+        // ignore – stopping twice is safe
+      }
     }
-    try {
-      await Nade.stop();
-    } catch (_) {}
     _nadeSessionActive = false;
     _callRole = _CallRole.none;
     _sessionPeerPublicKey = '';
