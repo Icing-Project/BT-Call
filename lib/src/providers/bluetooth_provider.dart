@@ -1,8 +1,15 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:nade_flutter/nade_flutter.dart';
+
+import '../models/contact.dart';
 import '../models/device.dart';
 import '../repositories/share_profile_repository.dart';
+import '../services/asymmetric_crypto_service.dart';
 import '../services/bluetooth_audio_service.dart';
 import 'contacts_provider.dart';
 
@@ -15,9 +22,20 @@ class UXMessage {
   final UXMessageType type;
 }
 
+enum _CallRole { none, server, client }
+
 class BluetoothProvider extends ChangeNotifier {
   final BluetoothAudioService _service = BluetoothAudioService.instance;
   final ShareProfileRepository _shareProfileRepository = ShareProfileRepository();
+  final AsymmetricCryptoService _cryptoService = AsymmetricCryptoService();
+
+  Uint8List? _identitySeed;
+  String? _identityAlias;
+  Future<void>? _nadeInitFuture;
+  bool _nadeReady = false;
+  bool _nadeSessionActive = false;
+  bool _nadeEverInitialized = false;
+  _CallRole _callRole = _CallRole.none;
 
   List<Device> _devices = [];
   String _status = 'idle';
@@ -32,6 +50,7 @@ class BluetoothProvider extends ChangeNotifier {
   String? _cachedDiscoveryHint;
   ContactsProvider? _contactsProvider;
   final Map<String, String> _hintByAddress = {};
+  String _sessionPeerPublicKey = '';
   
   // Connected device info
   Device? _connectedDevice;
@@ -57,6 +76,7 @@ class BluetoothProvider extends ChangeNotifier {
 
   BluetoothProvider() {
     BluetoothAudioService.setMethodCallHandler(_handleNativeCall);
+    Nade.setEventHandler(_handleNadeEvent);
   }
 
   void attachContactsProvider(ContactsProvider provider) {
@@ -97,19 +117,33 @@ class BluetoothProvider extends ChangeNotifier {
         }
         break;
       case 'onDeviceConnected':
+        print('BluetoothProvider: onDeviceConnected called'); // DEBUG LOG
         // Handle when a device connects (from either client or server side)
         final args = call.arguments as Map;
-        final name = args['name'] as String;
         final address = args['address'] as String;
-        final hint = _hintByAddress[address.toUpperCase()] ?? '';
-        _connectedDevice = Device(name: name, address: address, discoveryHint: hint);
-        if (hint.isNotEmpty) {
+        final existingHint = _hintByAddress[address.toUpperCase()] ?? '';
+        final hintFromArgs = (args['hint'] as String? ?? '').toUpperCase();
+        final profile = (args['profile'] as Map?)?.cast<String, dynamic>();
+        String remoteHint = (profile?['discoveryHint'] as String? ?? '').toUpperCase();
+        if (remoteHint.isEmpty) {
+          remoteHint = hintFromArgs.isNotEmpty ? hintFromArgs : existingHint;
+        }
+        final remoteName = (profile?['displayName'] as String? ?? args['name'] as String).trim();
+        final deviceName = remoteName.isNotEmpty ? remoteName : args['name'] as String;
+        if (remoteHint.isNotEmpty) {
+          _hintByAddress[address.toUpperCase()] = remoteHint;
+        }
+        _connectedDevice = Device(name: deviceName, address: address, discoveryHint: remoteHint);
+        if (profile != null) {
+          _storePeerProfile(_connectedDevice!, profile);
+        } else if (remoteHint.isNotEmpty) {
           _maybeUpdateContactFromDiscovery(_connectedDevice!);
         }
         _status = 'connected';
         _isConnecting = false;
         _serverActive = true;
-        _pushMessage('Connected to $name', type: UXMessageType.info);
+        _pushMessage('Connected to $deviceName', type: UXMessageType.info);
+        await _startNadeForConnectedDevice(_connectedDevice!);
         notifyListeners();
         break;
       case 'onCallEnded':
@@ -118,6 +152,7 @@ class BluetoothProvider extends ChangeNotifier {
         _connectedDevice = null;
         _isConnecting = false;
         _serverActive = false;
+        await _stopNadeSession();
         _pushMessage('Call ended by remote device.', type: UXMessageType.warning);
         notifyListeners();
         break;
@@ -126,6 +161,7 @@ class BluetoothProvider extends ChangeNotifier {
         // Clear connected device if disconnected
         if (_status == 'stopped' || _status == 'disconnected' || _status.contains('Error')) {
           _connectedDevice = null;
+          await _stopNadeSession();
         }
         final normalized = _status.toLowerCase();
         if (normalized.contains('connected')) {
@@ -135,6 +171,7 @@ class BluetoothProvider extends ChangeNotifier {
         if (normalized.contains('disconnected') || normalized.contains('call ended')) {
           _isConnecting = false;
           _serverActive = false;
+          await _stopNadeSession();
         }
         if (normalized.contains('scanning')) {
           _scanInProgress = true;
@@ -157,6 +194,7 @@ class BluetoothProvider extends ChangeNotifier {
         _scanInProgress = false;
         _serverStarting = false;
         _serverActive = false;
+        await _stopNadeSession();
         _pushMessage('Error: ${call.arguments}', type: UXMessageType.error);
         notifyListeners();
         break;
@@ -172,10 +210,17 @@ class BluetoothProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    
     _serverStarting = true;
     _status = 'starting server';
     _resetCallSettingsToDefaults();
     notifyListeners();
+
+    // Initialize NADE before setting role to avoid race condition where
+    // initialization resets the role to 'none'.
+    await _ensureNadeInitialized();
+    _callRole = _CallRole.server;
+
     final statuses = await [
       Permission.microphone,
       Permission.bluetoothConnect,
@@ -184,24 +229,39 @@ class BluetoothProvider extends ChangeNotifier {
     if (statuses.values.any((s) => !s.isGranted)) {
       _status = 'Permissions required';
       _serverStarting = false;
+       _callRole = _CallRole.none;
       _pushMessage('Server requires microphone and Bluetooth permissions.', type: UXMessageType.warning);
       notifyListeners();
       return;
     }
-    final hint = await _ensureDiscoveryHint();
+    Map<String, String>? profile;
+    try {
+      profile = await _buildLocalTransportProfile();
+    } catch (e) {
+      _status = 'key required';
+      _serverStarting = false;
+      _callRole = _CallRole.none;
+      _pushMessage(e.toString(), type: UXMessageType.error);
+      notifyListeners();
+      return;
+    }
+    final hint = profile['discoveryHint'] ?? '';
     try {
       await _service.startServer(
         decrypt: _decryptEnabled,
         encrypt: _encryptEnabled,
         discoveryHint: hint,
+        profile: Map<String, dynamic>.from(profile),
       );
       _serverActive = true;
       _pushMessage('Server started. Waiting for incoming calls.');
     } on PlatformException catch (e) {
       _status = 'Error: ${e.message ?? 'server start failed'}';
+      _callRole = _CallRole.none;
       _pushMessage('Failed to start server: ${e.message ?? 'unknown error'}', type: UXMessageType.error);
     } catch (e) {
       _status = 'Error: $e';
+      _callRole = _CallRole.none;
       _pushMessage('Failed to start server: $e', type: UXMessageType.error);
     } finally {
       _serverStarting = false;
@@ -219,6 +279,7 @@ class BluetoothProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await _service.stop();
+      await _stopNadeSession();
       _serverActive = false;
       _status = 'stopped';
       _pushMessage('Server stopped.');
@@ -298,9 +359,31 @@ class BluetoothProvider extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    
     _isConnecting = true;
     _status = 'connecting';
     _resetCallSettingsToDefaults();
+    
+    // Initialize NADE before setting role to avoid race condition
+    await _ensureNadeInitialized();
+    _callRole = _CallRole.client;
+
+    // Request permissions for Client role as well
+    final statuses = await [
+      Permission.microphone,
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+    ].request();
+    
+    if (statuses.values.any((s) => !s.isGranted)) {
+      _status = 'Permissions required';
+      _isConnecting = false;
+      _callRole = _CallRole.none;
+      _pushMessage('Call requires microphone and Bluetooth permissions.', type: UXMessageType.warning);
+      notifyListeners();
+      return;
+    }
+
     // Find the device by address to store connected device info
     final device = _devices.firstWhere(
       (d) => d.address == address, 
@@ -311,19 +394,37 @@ class BluetoothProvider extends ChangeNotifier {
     );
     _connectedDevice = device;
     notifyListeners();
+    Map<String, String>? profile;
     try {
-      await _service.connectToDevice(address, decrypt: _decryptEnabled, encrypt: _encryptEnabled);
+      profile = await _buildLocalTransportProfile();
+    } catch (e) {
+      _status = 'key required';
+      _isConnecting = false;
+      _callRole = _CallRole.none;
+      _pushMessage(e.toString(), type: UXMessageType.error);
+      notifyListeners();
+      return;
+    }
+    try {
+      await _service.connectToDevice(
+        address,
+        decrypt: _decryptEnabled,
+        encrypt: _encryptEnabled,
+        profile: Map<String, dynamic>.from(profile),
+      );
       _pushMessage('Connecting to ${device.name}...');
     } on PlatformException catch (e) {
       _status = 'connection failed';
       _isConnecting = false;
       _connectedDevice = null;
+      _callRole = _CallRole.none;
       _pushMessage('Failed to connect: ${e.message ?? 'unknown error'}', type: UXMessageType.error);
       notifyListeners();
     } catch (e) {
       _status = 'connection failed';
       _isConnecting = false;
       _connectedDevice = null;
+      _callRole = _CallRole.none;
       _pushMessage('Failed to connect: $e', type: UXMessageType.error);
       notifyListeners();
     }
@@ -339,6 +440,7 @@ class BluetoothProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await _service.stop();
+      await _stopNadeSession();
       _connectedDevice = null;
       _serverActive = false;
       _status = 'disconnected';
@@ -364,6 +466,7 @@ class BluetoothProvider extends ChangeNotifier {
     notifyListeners();
     try {
       await _service.endCall();
+      await _stopNadeSession();
       _status = 'call ended';
       _pushMessage('Call ended.');
     } on PlatformException catch (e) {
@@ -381,9 +484,34 @@ class BluetoothProvider extends ChangeNotifier {
 
   /// Reset call settings to their default values when starting a new call
   void _resetCallSettingsToDefaults() {
-    _decryptEnabled = true;   // Decryption enabled by default
-    _encryptEnabled = true;   // Encryption enabled by default  
+    _decryptEnabled = true;   // Encryption/decryption required by default
+    _encryptEnabled = true;   // Encryption/decryption required by default  
     _speakerOn = false;       // Speaker disabled by default
+    _sessionPeerPublicKey = '';
+  }
+
+  Future<Map<String, String>> _buildLocalTransportProfile() async {
+    final discoveryHint = await _ensureDiscoveryHint();
+    final displayName = (await _shareProfileRepository.loadDisplayName())?.trim();
+    
+    // Ensure we have a valid key (this will auto-create one if needed)
+    final savedAlias = await _shareProfileRepository.loadKeyAlias();
+    final validAlias = await _cryptoService.ensureValidKey(savedAlias);
+    
+    late final String publicKey;
+    try {
+      publicKey = (await _cryptoService.deriveNadePublicKey(validAlias)).trim();
+    } catch (e) {
+      throw StateError('No key material available. Generate a key pair in Contacts > Share. ($e)');
+    }
+    if (!_isValidNadeKey(publicKey)) {
+      throw StateError('Primary call key is invalid. Regenerate your key pair.');
+    }
+    return {
+      'discoveryHint': discoveryHint,
+      'displayName': (displayName != null && displayName.isNotEmpty) ? displayName : 'Unknown',
+      'publicKey': publicKey,
+    };
   }
 
   Future<String> _ensureDiscoveryHint() async {
@@ -393,6 +521,157 @@ class BluetoothProvider extends ChangeNotifier {
     final hint = (await _shareProfileRepository.ensureDiscoveryHint()).toUpperCase();
     _cachedDiscoveryHint = hint;
     return hint;
+  }
+
+  Future<void> _ensureNadeInitialized() async {
+    final savedAlias = await _shareProfileRepository.loadKeyAlias();
+    // Ensure we have a valid key, creating one if necessary
+    final validAlias = await _cryptoService.ensureValidKey(savedAlias);
+    
+    if (_identityAlias != validAlias) {
+      await _stopNadeSession();
+      _identityAlias = validAlias;
+      // Save the valid alias if it changed
+      if (savedAlias != validAlias) {
+        await _shareProfileRepository.saveKeyAlias(validAlias);
+      }
+      _identitySeed = null;
+      _nadeReady = false;
+      _nadeInitFuture = null;
+    }
+    if (_nadeReady) {
+      return;
+    }
+    _nadeInitFuture ??= () async {
+      final seed = await _loadIdentitySeed(validAlias);
+      await Nade.initialize(identityKeySeed: seed, force: _nadeEverInitialized);
+      _nadeEverInitialized = true;
+      _nadeReady = true;
+    }();
+    await _nadeInitFuture;
+  }
+
+  Future<Uint8List> _loadIdentitySeed(String alias) async {
+    if (_identitySeed != null && _identityAlias == alias) {
+      return _identitySeed!;
+    }
+    final seed = await _cryptoService.deriveNadeSeed(alias);
+    _identitySeed = seed;
+    return seed;
+  }
+
+  Future<void> _startNadeForConnectedDevice(Device device) async {
+    print('BluetoothProvider: _startNadeForConnectedDevice called for ${device.name}'); // DEBUG LOG
+    if (_callRole == _CallRole.none) {
+      print('BluetoothProvider: Call role is NONE, aborting NADE start'); // DEBUG LOG
+      return;
+    }
+    try {
+      await _ensureNadeInitialized();
+      final peerKey = _extractPeerKey(device);
+      print('BluetoothProvider: Extracted peer key: ${peerKey.isNotEmpty ? "FOUND" : "EMPTY"}'); // DEBUG LOG
+      
+      if (!_isValidNadeKey(peerKey)) {
+        print('BluetoothProvider: Invalid peer key, stopping session'); // DEBUG LOG
+        _status = 'missing peer key';
+        _pushMessage(
+          'Secure profile exchange failed. Ensure both devices shared codes before calling.',
+          type: UXMessageType.error,
+        );
+        await _service.stop();
+        await _stopNadeSession();
+        notifyListeners();
+        return;
+      }
+      await _applyNadeConfig();
+      bool started;
+      if (_callRole == _CallRole.server) {
+        print('BluetoothProvider: Starting NADE as SERVER'); // DEBUG LOG
+        started = await Nade.startAsServer(peerPublicKeyBase64: peerKey);
+      } else {
+        print('BluetoothProvider: Starting NADE as CLIENT'); // DEBUG LOG
+        started = await Nade.startAsClient(
+          peerPublicKeyBase64: peerKey,
+          targetAddress: device.address,
+        );
+      }
+      print('BluetoothProvider: NADE start result: $started'); // DEBUG LOG
+      if (started) {
+        _nadeSessionActive = true;
+      } else {
+        _pushMessage('Unable to start secure audio session.', type: UXMessageType.error);
+      }
+    } catch (e) {
+      print('BluetoothProvider: Audio initialization failed: $e'); // DEBUG LOG
+      _pushMessage('Audio initialization failed: $e', type: UXMessageType.error);
+    }
+  }
+
+  bool _isValidNadeKey(String key) {
+    if (key.trim().isEmpty) {
+      return false;
+    }
+    try {
+      final decoded = base64Decode(key.trim());
+      return decoded.length == 32;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _extractPeerKey(Device device) {
+    if (_sessionPeerPublicKey.isNotEmpty) {
+      return _sessionPeerPublicKey.trim();
+    }
+    final hint = device.discoveryHint.toUpperCase();
+    if (hint.isNotEmpty) {
+      final contact = _contactsProvider?.contactForDiscoveryHint(hint);
+      if (contact != null && contact.publicKey.isNotEmpty) {
+        return contact.publicKey.trim();
+      }
+    }
+    return '';
+  }
+
+  Future<void> _stopNadeSession() async {
+    if (!_nadeSessionActive) {
+      _callRole = _CallRole.none;
+      _sessionPeerPublicKey = '';
+      return;
+    }
+    try {
+      await Nade.stop();
+    } catch (_) {}
+    _nadeSessionActive = false;
+    _callRole = _CallRole.none;
+    _sessionPeerPublicKey = '';
+  }
+
+  Future<void> _applyNadeConfig() async {
+    if (!_nadeReady) return;
+    await Nade.configure({
+      'encrypt': _encryptEnabled,
+      'decrypt': _decryptEnabled,
+      'speaker': _speakerOn,
+    });
+  }
+
+  void _handleNadeEvent(Map<String, dynamic> payload) {
+    final type = payload['type'];
+    if (type == 'state') {
+      final value = payload['value']?.toString();
+      if (value == 'stopped' || value == 'transport_detached' || value == 'link_closed') {
+        _nadeSessionActive = false;
+        _callRole = _CallRole.none;
+      }
+      notifyListeners();
+      return;
+    }
+    if (type == 'error') {
+      final message = payload['message']?.toString() ?? 'Unknown audio error';
+      _pushMessage('Audio error: $message', type: UXMessageType.error);
+      notifyListeners();
+    }
   }
 
   void _maybeUpdateContactFromDiscovery(Device device) {
@@ -407,10 +686,34 @@ class BluetoothProvider extends ChangeNotifier {
     );
   }
 
+  void _storePeerProfile(Device device, Map<String, dynamic> profile) {
+    final normalizedHint = (profile['discoveryHint'] as String? ?? device.discoveryHint).toUpperCase();
+    final publicKey = (profile['publicKey'] as String? ?? '').trim();
+    final displayName = (profile['displayName'] as String? ?? device.name).trim();
+    if (normalizedHint.isNotEmpty) {
+      _hintByAddress[device.address.toUpperCase()] = normalizedHint;
+    }
+    if (_isValidNadeKey(publicKey)) {
+      _sessionPeerPublicKey = publicKey.trim();
+    }
+    final provider = _contactsProvider;
+    if (provider != null && normalizedHint.isNotEmpty && _isValidNadeKey(publicKey)) {
+      final contact = Contact(
+        name: displayName.isNotEmpty ? displayName : device.name,
+        publicKey: publicKey,
+        discoveryHint: normalizedHint,
+        createdAt: DateTime.now(),
+        lastKnownDeviceName: device.name,
+      );
+      unawaited(provider.addContact(contact));
+    }
+  }
+
   void toggleDecrypt(bool value) {
     _decryptEnabled = value;
     // Notify native layer to update decryption mode dynamically
     _service.updateDecrypt(value);
+    unawaited(_applyNadeConfig());
     notifyListeners();
   }
   
@@ -418,12 +721,14 @@ class BluetoothProvider extends ChangeNotifier {
     _encryptEnabled = value;
     // Notify native layer to update encryption mode dynamically
     _service.updateEncrypt(value);
+    unawaited(_applyNadeConfig());
     notifyListeners();
   }
 
   void toggleSpeaker(bool value) {
     _speakerOn = value;
     _service.updateSpeaker(value);
+    unawaited(_applyNadeConfig());
     notifyListeners();
   }
 }

@@ -78,7 +78,7 @@ class _ManageKeysPageState extends State<ManageKeysPage> {
 
   Future<void> _viewPublicKey(String alias) async {
     try {
-      final publicKey = await _cryptoService.getPublicKey(alias);
+      final publicKey = await _cryptoService.deriveNadePublicKey(alias);
       showDialog(
         context: context,
         builder: (_) => AlertDialog(

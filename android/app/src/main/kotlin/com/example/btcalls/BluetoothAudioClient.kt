@@ -5,19 +5,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import java.io.IOException
-import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.security.KeyPairGenerator
-import java.security.KeyFactory
-import java.security.spec.X509EncodedKeySpec
-import javax.crypto.Cipher
-import javax.crypto.KeyAgreement
-import javax.crypto.spec.SecretKeySpec
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.CipherInputStream
-import javax.crypto.CipherOutputStream
-import java.security.MessageDigest
-import java.security.SecureRandom
+import com.icing.nade_flutter.NadeTransportBridge
 import java.util.UUID
 import kotlin.concurrent.thread
 
@@ -25,10 +13,10 @@ class BluetoothAudioClient(
     private val context: Context,
     private val decryptEnabled: Boolean,
     private val encryptEnabled: Boolean,
+    private val localProfile: TransportProfile,
     private val eventCallback: (method: String, arg: Any?) -> Unit
 ) {
     private val SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-        private var audioStreamer: AudioStreamer? = null
         private var connectedSocket: android.bluetooth.BluetoothSocket? = null
 
     fun startClient(mac: String) {
@@ -40,13 +28,22 @@ class BluetoothAudioClient(
                 adapter.cancelDiscovery()
                 socket.connect()
                 
-                // Send connected device information to Flutter
-                val deviceName = device.name ?: "Unknown Device"
+                val remoteProfile = try {
+                    ProfileHandshake.exchange(socket, localProfile)
+                } catch (ex: IOException) {
+                    eventCallback("onError", "profile_handshake_failed: ${ex.message}")
+                    socket.close()
+                    return@thread
+                }
+
+                val deviceName = remoteProfile.displayName.ifEmpty { device.name ?: "Unknown Device" }
                 val deviceAddress = device.address
                 
                 eventCallback("onDeviceConnected", mapOf(
                     "name" to deviceName,
-                    "address" to deviceAddress
+                    "address" to deviceAddress,
+                    "hint" to remoteProfile.discoveryHint,
+                    "profile" to remoteProfile.toMap()
                 ))
                 eventCallback("onStatus", "connected")
                 setupStreams(socket)
@@ -58,61 +55,11 @@ class BluetoothAudioClient(
 
     private fun setupStreams(socket: BluetoothSocket) {
         connectedSocket = socket
-        // Perform ECDH handshake and wrap streams with AES/CTR encryption
-        val rawIn = socket.inputStream
-        val rawOut = socket.outputStream
-        val din = DataInputStream(rawIn)
-        val dout = DataOutputStream(rawOut)
-        // Generate client EC key pair
-        val kpg = KeyPairGenerator.getInstance("EC").apply { initialize(256) }
-        val keyPair = kpg.generateKeyPair()
-        // Send client's public key
-        val clientPubBytes = keyPair.public.encoded
-        dout.writeInt(clientPubBytes.size)
-        dout.write(clientPubBytes)
-        dout.flush()
-        // Read server's public key
-        val serverPubLen = din.readInt()
-        val serverPubBytes = ByteArray(serverPubLen)
-        din.readFully(serverPubBytes)
-        val serverPubKey = KeyFactory.getInstance("EC")
-            .generatePublic(X509EncodedKeySpec(serverPubBytes))
-        // Derive shared secret
-        val ka = KeyAgreement.getInstance("ECDH")
-        ka.init(keyPair.private)
-        ka.doPhase(serverPubKey, true)
-        val shared = ka.generateSecret()
-        // Derive AES key
-        val aesKey = MessageDigest.getInstance("SHA-256").digest(shared).copyOf(16)
-        val secretKey = SecretKeySpec(aesKey, "AES")
-        // Generate IV and send to server
-        val iv = ByteArray(16).apply { SecureRandom().nextBytes(this) }
-        dout.write(iv)
-        dout.flush()
-        val ivSpec = IvParameterSpec(iv)
-        // Initialize ciphers
-        val encryptCipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
-            init(Cipher.ENCRYPT_MODE, secretKey, ivSpec)
-        }
-        val decryptCipher = Cipher.getInstance("AES/CTR/NoPadding").apply {
-            init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-        }
-    // Wrap output stream for encryption
-    val cipherOut = CipherOutputStream(rawOut, encryptCipher)
-    // Create AudioStreamer with rawIn input, decryptCipher, encrypted output
-    audioStreamer = AudioStreamer(context, rawIn, decryptCipher, rawOut, cipherOut, encryptCipher) {
-        // End call signal received - notify Flutter
-        android.util.Log.d("BluetoothAudioClient", "End call signal received, notifying Flutter")
-        eventCallback("onCallEnded", null)
-    }
-    audioStreamer?.decryptEnabled = decryptEnabled
-    audioStreamer?.encryptEnabled = encryptEnabled
-        audioStreamer!!.start()
+        NadeTransportBridge.attachStreams(socket.inputStream, socket.outputStream)
     }
 
     fun stop() {
-        // Stop streaming and close socket
-        audioStreamer?.stop()
+        NadeTransportBridge.detachStreams()
         connectedSocket?.close()
     }
     
@@ -123,16 +70,16 @@ class BluetoothAudioClient(
     
     // Toggle decryption display at runtime
     fun toggleDecryption(enabled: Boolean) {
-        audioStreamer?.decryptEnabled = enabled
+        // handled via NADE configuration on Flutter side
     }
     
     // Toggle encryption at runtime
     fun toggleEncryption(enabled: Boolean) {
-        audioStreamer?.encryptEnabled = enabled
+        // handled via NADE configuration on Flutter side
     }
 
     // Toggle speakerphone at runtime
     fun toggleSpeaker(enabled: Boolean) {
-        audioStreamer?.toggleSpeaker(enabled)
+        NadeTransportBridge.updateSpeaker(enabled)
     }
 }

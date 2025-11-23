@@ -6,19 +6,12 @@ import 'src/providers/theme_provider.dart';
 import 'src/providers/contacts_provider.dart';
 import 'src/theme/app_theme.dart';
 import 'src/screens/home_screen.dart';
-import 'src/services/four_fsk_service.dart';
 import 'src/services/bluetooth_audio_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // set up 4-FSK modem and Bluetooth audio service singleton
-  BluetoothAudioService.initialize(
-    FourFskService(
-      sampleRate: 8000,
-      symbolRate: 100.0,
-      frequencies: [1200, 1600, 2000, 2400],
-    ),
-  );
+  // Ensure the Bluetooth audio channel is ready.
+  BluetoothAudioService.instance;
   runApp(const MyApp());
 }
 

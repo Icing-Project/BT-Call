@@ -55,7 +55,6 @@ class KeystoreHelper(private val call: MethodCall, private val result: MethodCha
                 KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
             )
                 .setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
-                .setDigests(KeyProperties.DIGEST_SHA256)
                 .setUserAuthenticationRequired(false)
                 .build()
             keyPairGenerator.initialize(parameterSpec)
