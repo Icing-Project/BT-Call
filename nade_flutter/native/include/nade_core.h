@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,9 @@ int nade_handle_incoming_frame(const uint8_t *data, size_t len);
 int nade_pull_speaker_frame(int16_t *out_buf, size_t max_samples);
 
 int nade_set_config(const char *json);
+
+int nade_send_hangup_signal(void);
+int nade_consume_remote_hangup(void);
 
 #ifdef __cplusplus
 }

@@ -247,6 +247,7 @@ class BluetoothProvider extends ChangeNotifier {
     }
     final hint = profile['discoveryHint'] ?? '';
     try {
+      print('BluetoothProvider: Starting server with hint: $hint, encrypt: $_encryptEnabled, decrypt: $_decryptEnabled !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'); // DEBUG LOG
       await _service.startServer(
         decrypt: _decryptEnabled,
         encrypt: _encryptEnabled,
@@ -660,6 +661,18 @@ class BluetoothProvider extends ChangeNotifier {
     final type = payload['type'];
     if (type == 'state') {
       final value = payload['value']?.toString();
+      if (value == 'remote_hangup') {
+        _status = 'call ended by remote';
+        _connectedDevice = null;
+        _isConnecting = false;
+        _serverActive = false;
+        _nadeSessionActive = false;
+        _callRole = _CallRole.none;
+        _sessionPeerPublicKey = '';
+        _pushMessage('Call ended by remote device.', type: UXMessageType.warning);
+        notifyListeners();
+        return;
+      }
       if (value == 'stopped' || value == 'transport_detached' || value == 'link_closed') {
         _nadeSessionActive = false;
         _callRole = _CallRole.none;

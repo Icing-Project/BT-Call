@@ -44,6 +44,7 @@
 #define FRAME_KIND_CONTROL 0x04
 #define AUDIO_PAYLOAD_TYPE 0xA1
 #define KEEPALIVE_TYPE 0xCC
+#define HANGUP_TYPE 0xDD
 #define HANDSHAKE_RESEND_MS 500
 #define KEEPALIVE_INTERVAL_MS 1000
 #define MAX_FRAME_BODY 2048
@@ -96,6 +97,7 @@ typedef struct {
     uint64_t last_keepalive_ms;
     bool tx_aead_ready;
     bool rx_aead_ready;
+    bool remote_hangup_requested;
     nade_adpcm_state_t enc_state;
     nade_adpcm_state_t dec_state;
 } nade_session_state_t;
@@ -945,10 +947,20 @@ static void queue_handshake_locked(void) {
     }
 }
 
-static void queue_keepalive_locked(void) {
-    uint8_t payload[1] = {KEEPALIVE_TYPE};
+static void queue_control_payload_locked(uint8_t type) {
+    uint8_t payload[1] = {type};
     queue_frame(FRAME_KIND_CONTROL, payload, sizeof(payload));
+}
+
+static void queue_keepalive_locked(void) {
+    queue_control_payload_locked(KEEPALIVE_TYPE);
     g_session.last_keepalive_ms = now_monotonic_ms();
+}
+
+static void queue_hangup_locked(void) {
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Queueing hangup control frame");
+    outgoing_clear();
+    queue_control_payload_locked(HANGUP_TYPE);
 }
 
 static void queue_audio_frames_locked(void) {
@@ -1035,6 +1047,23 @@ static void handle_audio_plain_locked(const uint8_t *data, size_t len) {
     }
 }
 
+static void handle_control_plain_locked(const uint8_t *data, size_t len) {
+    if (len == 0) {
+        return;
+    }
+    uint8_t subtype = data[0];
+    if (subtype == KEEPALIVE_TYPE) {
+        g_session.last_keepalive_ms = now_monotonic_ms();
+        return;
+    }
+    if (subtype == HANGUP_TYPE) {
+        if (!g_session.remote_hangup_requested) {
+            __android_log_print(ANDROID_LOG_INFO, TAG, "Remote hangup signal received");
+        }
+        g_session.remote_hangup_requested = true;
+    }
+}
+
 static void handle_encrypted_payload_locked(const uint8_t *data, size_t len, bool encrypted) {
     if (!g_session.handshake_complete) {
         return;
@@ -1079,7 +1108,14 @@ static void handle_encrypted_payload_locked(const uint8_t *data, size_t len, boo
         memcpy(plain, data, min_size(len, sizeof(plain)));
         plain_len = min_size(len, sizeof(plain));
     }
-    handle_audio_plain_locked(plain, plain_len);
+    if (plain_len == 0) {
+        return;
+    }
+    if (plain[0] == AUDIO_PAYLOAD_TYPE) {
+        handle_audio_plain_locked(plain, plain_len);
+    } else {
+        handle_control_plain_locked(plain, plain_len);
+    }
 }
 
 static void handle_handshake_payload_locked(const uint8_t *payload, size_t len) {
@@ -1270,6 +1306,27 @@ int nade_pull_speaker_frame(int16_t *out_buf, size_t max_samples) {
                                out_buf, max_samples, &g_spk_mutex);
 }
 
+int nade_send_hangup_signal(void) {
+    pthread_mutex_lock(&g_session_mutex);
+    bool can_signal = g_session.active;
+    __android_log_print(ANDROID_LOG_INFO, TAG,
+                        "Hangup signal requested (active=%d)",
+                        can_signal ? 1 : 0);
+    if (can_signal) {
+        queue_hangup_locked();
+    }
+    pthread_mutex_unlock(&g_session_mutex);
+    return can_signal ? 0 : -1;
+}
+
+int nade_consume_remote_hangup(void) {
+    pthread_mutex_lock(&g_session_mutex);
+    bool requested = g_session.remote_hangup_requested;
+    g_session.remote_hangup_requested = false;
+    pthread_mutex_unlock(&g_session_mutex);
+    return requested ? 1 : 0;
+}
+
 static bool parse_bool_flag(const char *json, const char *key, bool fallback) {
     const char *found = strstr(json, key);
     if (!found) {
@@ -1427,6 +1484,20 @@ Java_com_icing_nade_1flutter_NadeCore_nativeGenerateOutgoing(JNIEnv *env, jobjec
     size_t produced = nade_generate_outgoing_frame((uint8_t *)ptr, (size_t)max_len);
     (*env)->ReleaseByteArrayElements(env, buffer, ptr, 0);
     return (jint)produced;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeSendHangupSignal(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    return nade_send_hangup_signal();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeConsumeRemoteHangup(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    return nade_consume_remote_hangup() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL

@@ -25,6 +25,8 @@ internal object NadeCore {
     external fun nativeGenerateOutgoing(buffer: ByteArray, maxLength: Int): Int
     external fun nativeSetConfig(configJson: String): Int
     external fun nativeDerivePublicKey(seed: ByteArray): ByteArray?
+    external fun nativeSendHangupSignal(): Int
+    external fun nativeConsumeRemoteHangup(): Boolean
 
     fun initialize(seed: ByteArray): Boolean = nativeInit(seed) == 0
 
@@ -58,5 +60,13 @@ internal object NadeCore {
 
     fun derivePublicKey(seed: ByteArray): ByteArray? {
         return nativeDerivePublicKey(seed)
+    }
+
+    fun sendHangupSignal() {
+        nativeSendHangupSignal()
+    }
+
+    fun consumeRemoteHangup(): Boolean {
+        return nativeConsumeRemoteHangup()
     }
 }

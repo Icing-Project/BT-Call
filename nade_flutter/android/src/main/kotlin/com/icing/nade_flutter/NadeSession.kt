@@ -11,6 +11,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import org.json.JSONObject
@@ -51,6 +52,10 @@ internal class NadeSession(
     private var outputStream: OutputStream? = null
 
     private val configState = JSONObject()
+    @Volatile private var hangupSent = false
+    @Volatile private var hangupDrainPending = false
+    @Volatile private var hangupDrainSucceeded = false
+    @Volatile private var remoteHangupNotified = false
 
     init {
         val minBufRec = AudioRecord.getMinBufferSize(
@@ -181,7 +186,16 @@ internal class NadeSession(
         NadeCore.setConfig(configState.toString())
     }
 
-    fun stop() {
+    fun stop(sendHangup: Boolean = true) {
+        val shouldSignal = sendHangup && transportReady.get() && !hangupSent
+        if (shouldSignal) {
+            hangupSent = true
+            hangupDrainPending = true
+            hangupDrainSucceeded = false
+            Log.i("NadeSession", "Sending hangup control to remote peer")
+            NadeCore.sendHangupSignal()
+            waitForHangupDrain()
+        }
         running.set(false)
         transportReady.set(false)
         detachTransport()
@@ -209,13 +223,56 @@ internal class NadeSession(
         rxThread?.interrupt()
         speakerThread?.interrupt()
         NadeCore.stopSession()
+        hangupSent = false
         emitState("stopped")
+    }
+
+    private fun waitForHangupDrain(maxWaitMs: Long = 200) {
+        val start = SystemClock.elapsedRealtime()
+        while (hangupDrainPending && SystemClock.elapsedRealtime() - start < maxWaitMs) {
+            try {
+                Thread.sleep(5)
+            } catch (_: InterruptedException) {
+                break
+            }
+        }
+        val elapsed = SystemClock.elapsedRealtime() - start
+        when {
+            !hangupDrainPending && hangupDrainSucceeded ->
+                Log.i("NadeSession", "Hangup control flushed in ${elapsed}ms")
+            hangupDrainPending ->
+                Log.w("NadeSession", "Hangup flush not confirmed after ${maxWaitMs}ms")
+        }
+        hangupDrainPending = false
+        hangupDrainSucceeded = false
+    }
+
+    private fun checkRemoteHangup(tag: String): Boolean {
+        if (NadeCore.consumeRemoteHangup()) {
+            notifyRemoteHangup(tag)
+            return true
+        }
+        return false
+    }
+
+    private fun notifyRemoteHangup(reason: String) {
+        if (remoteHangupNotified) {
+            Log.d("NadeSession", "Remote hangup already handled, skipping ($reason)")
+            return
+        }
+        remoteHangupNotified = true
+        Log.i("NadeSession", "Remote hangup triggered ($reason)")
+        mainHandler.post {
+            emitState("remote_hangup")
+            stop(false)
+        }
     }
 
     private fun ensureThreads() {
         if (running.get()) return
         Log.d("NadeSession", "ensureThreads() called - starting audio session")
         running.set(true)
+        remoteHangupNotified = false
         requestAudioFocus()
         try {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -314,16 +371,24 @@ internal class NadeSession(
                 if (produced > 0) {
                     out.write(outgoingBuffer, 0, produced)
                     out.flush()
+                    if (hangupDrainPending) {
+                        hangupDrainPending = false
+                        hangupDrainSucceeded = true
+                        Log.i("NadeSession", "Hangup frame flushed via transmit loop")
+                    }
                     packets++
                     if (packets % 100 == 0) Log.d("NadeSession", "Tx sent $packets packets")
                 } else {
                     Thread.sleep(4)
                 }
             }
-        } catch (ex: Exception) {
+        } catch (ex: IOException) {
             if (running.get()) {
-                emitError("tx_loop", ex)
+                Log.i("NadeSession", "Bluetooth socket closed during transmit: ${ex.message}")
+                notifyRemoteHangup("tx_exception")
             }
+        } catch (ex: Exception) {
+            if (running.get()) emitError("tx_loop", ex)
         }
     }
 
@@ -337,22 +402,33 @@ internal class NadeSession(
                     Thread.sleep(10)
                     continue
                 }
+                if (checkRemoteHangup("pre-read")) {
+                    break
+                }
                 val read = input.read(incomingBuffer)
                 if (read > 0) {
                     NadeCore.handleIncoming(incomingBuffer, read)
+                    if (checkRemoteHangup("post-frame")) {
+                        break
+                    }
                     packets++
                     if (packets < 5 || packets % 100 == 0) {
                         Log.d("NadeSession", "Rx received packet #$packets ($read bytes)")
                     }
                 } else if (read < 0) {
+                    Log.i("NadeSession", "Transport closed by peer (read=$read)")
+                    notifyRemoteHangup("socket_eof")
                     emitState("link_closed")
                     break
                 }
             }
-        } catch (ex: Exception) {
+        } catch (ex: IOException) {
             if (running.get()) {
-                emitError("rx_loop", ex)
+                Log.i("NadeSession", "Bluetooth socket closed during receive: ${ex.message}")
+                notifyRemoteHangup("rx_exception")
             }
+        } catch (ex: Exception) {
+            if (running.get()) emitError("rx_loop", ex)
         }
     }
 
