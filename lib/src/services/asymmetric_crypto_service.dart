@@ -11,6 +11,7 @@ import 'package:nade_flutter/nade_flutter.dart';
 
 class AsymmetricCryptoService {
   static const MethodChannel _channel = MethodChannel('com.example.keystore');
+  static const MethodChannel _nadeMethodChannel = MethodChannel('nade_flutter');
   final FlutterSecureStorage _secureStorage = FlutterSecureStorage();
   final String _aliasPrefix = 'icing_';
   final Uuid _uuid = Uuid();
@@ -186,12 +187,15 @@ class AsymmetricCryptoService {
     try {
       await _channel.invokeMethod('deleteKeyPair', {'alias': alias});
       
+      await _purgeSoftwareFallbackSeed(alias);
+
       final String? existingKeys = await _secureStorage.read(key: 'keys');
       if (existingKeys != null) {
         List<dynamic> keysList = jsonDecode(existingKeys);
         keysList.removeWhere((key) => key['alias'] == alias);
         await _secureStorage.write(key: 'keys', value: jsonEncode(keysList));
       }
+      await _notifyNadePreferredKeyRemoved(alias);
     } on PlatformException catch (e) {
       throw Exception("Failed to delete key pair: ${e.message}");
     }
@@ -230,8 +234,16 @@ class AsymmetricCryptoService {
   Future<String> ensureValidKey(String? preferredAlias) async {
     // First check if preferred alias exists and is valid
     if (preferredAlias != null && preferredAlias.isNotEmpty) {
+      final aliasInMetadata = await _metadataContainsAlias(preferredAlias);
+      if (!aliasInMetadata) {
+        debugPrint('Preferred key $preferredAlias missing metadata, purging artifacts');
+        await _purgeSoftwareFallbackSeed(preferredAlias);
+        try {
+          await _removeAlias(preferredAlias);
+        } catch (_) {}
+      }
       try {
-        final exists = await keyPairExists(preferredAlias);
+        final exists = aliasInMetadata && await keyPairExists(preferredAlias);
         if (exists) {
           debugPrint('Preferred key $preferredAlias exists, testing if it works...');
           // Try a quick test to ensure it actually works
@@ -486,5 +498,40 @@ class AsymmetricCryptoService {
       });
     }
     await _secureStorage.write(key: 'keys', value: jsonEncode(keysList));
+  }
+
+  Future<bool> _metadataContainsAlias(String alias) async {
+    final stored = await _secureStorage.read(key: 'keys');
+    if (stored == null) {
+      return false;
+    }
+    try {
+      final list = jsonDecode(stored);
+      if (list is List) {
+        for (final entry in list) {
+          if (entry is Map && entry['alias'] == alias) {
+            return true;
+          }
+        }
+      }
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
+  Future<void> _purgeSoftwareFallbackSeed(String alias) async {
+    try {
+      await _secureStorage.delete(key: 'nade_seed_$alias');
+    } catch (_) {}
+  }
+
+  Future<void> _notifyNadePreferredKeyRemoved(String alias) async {
+    try {
+      await _nadeMethodChannel.invokeMethod('refreshPreferredKeys', {'deletedAlias': alias});
+      debugPrint('NADE plugin notified that alias removed: $alias');
+    } catch (e) {
+      debugPrint('Unable to refresh preferred NADE keys after deleting $alias: $e');
+    }
   }
 }

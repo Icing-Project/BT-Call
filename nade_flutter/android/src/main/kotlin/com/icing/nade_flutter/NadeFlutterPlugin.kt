@@ -2,6 +2,7 @@ package com.icing.nade_flutter
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -37,6 +38,7 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
             "stop" -> handleStop(result)
             "configure" -> handleConfigure(call, result)
             "derivePublicKey" -> handleDerivePublicKey(call, result)
+            "refreshPreferredKeys" -> handleRefreshPreferredKeys(call, result)
             else -> result.notImplemented()
         }
     }
@@ -114,6 +116,12 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
         }
         val encoded = Base64.encodeToString(pub, Base64.NO_WRAP)
         result.success(encoded)
+    }
+
+    private fun handleRefreshPreferredKeys(call: MethodCall, result: Result) {
+        val alias = call.argument<String>("deletedAlias")
+        Log.i("NadeFlutterPlugin", "Refresh preferred keys request received (deleted: $alias)")
+        result.success(null)
     }
 
     private fun ensureSession(ctx: Context) {
