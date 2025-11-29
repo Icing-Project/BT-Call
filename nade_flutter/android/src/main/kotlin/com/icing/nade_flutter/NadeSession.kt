@@ -32,6 +32,13 @@ internal class NadeSession(
     private val speakerBuffer = ShortArray(frameSamples)
     private val micBuffer = ShortArray(frameSamples)
 
+    // 4-FSK Audio Transport Mode
+    // When enabled, encrypted data is modulated to audio tones for "audio over audio" transmission
+    @Volatile private var fskModeEnabled = false
+    private val fskSamplesPerByte = 320 // 4 symbols * 80 samples/symbol at 8kHz
+    private val fskModulatedBuffer = ShortArray(2048 * fskSamplesPerByte) // PCM output for modulated data
+    private val fskDemodulatedBuffer = ByteArray(4096) // Demodulated bytes from received audio
+
     private val running = AtomicBoolean(false)
     private val transportReady = AtomicBoolean(false)
 
@@ -182,9 +189,29 @@ internal class NadeSession(
             if (key == "speaker" && value is Boolean) {
                 setSpeakerEnabled(value)
             }
+            // Toggle 4-FSK audio transport mode
+            if (key == "fsk_mode" && value is Boolean) {
+                setFskModeEnabled(value)
+            }
         }
         NadeCore.setConfig(configState.toString())
     }
+
+    /**
+     * Enable or disable 4-FSK audio transport mode.
+     * When enabled:
+     * - Outgoing encrypted data is modulated to audio tones (1200/1600/2000/2400 Hz)
+     * - Incoming audio is demodulated back to encrypted data bytes
+     * Use this for "audio over audio" transmission (phone calls, radios, etc.)
+     */
+    fun setFskModeEnabled(enabled: Boolean) {
+        fskModeEnabled = enabled
+        NadeCore.setFskEnabled(enabled)
+        Log.i("NadeSession", "4-FSK audio transport mode ${if (enabled) "enabled" else "disabled"}")
+        emitState(if (enabled) "fsk_mode_enabled" else "fsk_mode_disabled")
+    }
+
+    fun isFskModeEnabled(): Boolean = fskModeEnabled
 
     fun stop(sendHangup: Boolean = true) {
         val shouldSignal = sendHangup && transportReady.get() && !hangupSent
@@ -358,7 +385,7 @@ internal class NadeSession(
     }
 
     private fun transmitLoop() {
-        Log.d("NadeSession", "transmitLoop started")
+        Log.d("NadeSession", "transmitLoop started (FSK mode: $fskModeEnabled)")
         var packets = 0
         try {
             while (running.get()) {
@@ -369,8 +396,40 @@ internal class NadeSession(
                 }
                 val produced = NadeCore.generateOutgoing(outgoingBuffer, outgoingBuffer.size)
                 if (produced > 0) {
-                    out.write(outgoingBuffer, 0, produced)
-                    out.flush()
+                    if (fskModeEnabled) {
+                        // 4-FSK Audio Transport Mode:
+                        // Modulate the encrypted data bytes into audio tones
+                        val samplesNeeded = NadeCore.fskSamplesForBytes(produced)
+                        val modulatedSamples = if (samplesNeeded <= fskModulatedBuffer.size) {
+                            NadeCore.fskModulate(
+                                outgoingBuffer.copyOf(produced),
+                                fskModulatedBuffer
+                            )
+                        } else {
+                            Log.w("NadeSession", "FSK buffer too small for $produced bytes")
+                            0
+                        }
+                        
+                        if (modulatedSamples > 0) {
+                            // Convert ShortArray to ByteArray (16-bit PCM, little-endian)
+                            val audioBytes = ByteArray(modulatedSamples * 2)
+                            for (i in 0 until modulatedSamples) {
+                                val sample = fskModulatedBuffer[i]
+                                audioBytes[i * 2] = (sample.toInt() and 0xFF).toByte()
+                                audioBytes[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+                            }
+                            out.write(audioBytes)
+                            out.flush()
+                            if (packets < 5 || packets % 50 == 0) {
+                                Log.d("NadeSession", "FSK Tx: $produced bytes -> $modulatedSamples samples")
+                            }
+                        }
+                    } else {
+                        // Direct byte transport (current behavior)
+                        out.write(outgoingBuffer, 0, produced)
+                        out.flush()
+                    }
+                    
                     if (hangupDrainPending) {
                         hangupDrainPending = false
                         hangupDrainSucceeded = true
@@ -393,8 +452,10 @@ internal class NadeSession(
     }
 
     private fun receiveLoop() {
-        Log.d("NadeSession", "receiveLoop started")
+        Log.d("NadeSession", "receiveLoop started (FSK mode: $fskModeEnabled)")
         var packets = 0
+        // Buffer for receiving audio samples in FSK mode
+        val fskRxAudioBuffer = ShortArray(8192)
         try {
             while (running.get()) {
                 val input = inputStream
@@ -407,7 +468,35 @@ internal class NadeSession(
                 }
                 val read = input.read(incomingBuffer)
                 if (read > 0) {
-                    NadeCore.handleIncoming(incomingBuffer, read)
+                    if (fskModeEnabled) {
+                        // 4-FSK Audio Transport Mode:
+                        // Received data is audio samples - demodulate to bytes
+                        val sampleCount = read / 2 // 16-bit samples
+                        if (sampleCount > 0 && sampleCount <= fskRxAudioBuffer.size) {
+                            // Convert ByteArray to ShortArray (16-bit PCM, little-endian)
+                            for (i in 0 until sampleCount) {
+                                val low = incomingBuffer[i * 2].toInt() and 0xFF
+                                val high = incomingBuffer[i * 2 + 1].toInt() and 0xFF
+                                fskRxAudioBuffer[i] = ((high shl 8) or low).toShort()
+                            }
+                            
+                            // Feed audio to demodulator
+                            NadeCore.fskFeedAudio(fskRxAudioBuffer, sampleCount)
+                            
+                            // Pull demodulated bytes and pass to NADE
+                            val demodulated = NadeCore.fskPullDemodulated(fskDemodulatedBuffer)
+                            if (demodulated > 0) {
+                                NadeCore.handleIncoming(fskDemodulatedBuffer, demodulated)
+                                if (packets < 5 || packets % 50 == 0) {
+                                    Log.d("NadeSession", "FSK Rx: $sampleCount samples -> $demodulated bytes")
+                                }
+                            }
+                        }
+                    } else {
+                        // Direct byte transport (current behavior)
+                        NadeCore.handleIncoming(incomingBuffer, read)
+                    }
+                    
                     if (checkRemoteHangup("post-frame")) {
                         break
                     }

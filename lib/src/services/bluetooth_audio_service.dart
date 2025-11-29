@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:nade_flutter/nade_flutter.dart';
 
 class BluetoothAudioService {
   static const MethodChannel _channel = MethodChannel('bt_audio');
@@ -86,6 +87,22 @@ class BluetoothAudioService {
   Future<void> updateSpeaker(bool speaker) async {
     try {
       await _channel.invokeMethod('setSpeaker', {'speaker': speaker});
+    } catch (_) {}
+  }
+
+  /// Enable or disable 4-FSK audio transport mode.
+  /// 
+  /// When enabled, encrypted data is modulated into audio tones (1200/1600/2000/2400 Hz)
+  /// that can be transmitted over any voice channel (phone calls, radios, etc.).
+  /// 
+  /// This is useful for "audio over audio" transmission where you need encrypted
+  /// communication over a voice medium rather than a data channel.
+  /// 
+  /// Note: Throughput is limited to ~50 bytes/sec in FSK mode.
+  Future<void> updateFskMode(bool enabled) async {
+    try {
+      // This goes through the NADE plugin's configure method
+      await Nade.setFskMode(enabled);
     } catch (_) {}
   }
 }

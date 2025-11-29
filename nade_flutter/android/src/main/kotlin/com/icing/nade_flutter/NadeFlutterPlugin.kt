@@ -39,6 +39,12 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
             "configure" -> handleConfigure(call, result)
             "derivePublicKey" -> handleDerivePublicKey(call, result)
             "refreshPreferredKeys" -> handleRefreshPreferredKeys(call, result)
+            // 4-FSK Modulation methods
+            "fskSetEnabled" -> handleFskSetEnabled(call, result)
+            "fskIsEnabled" -> handleFskIsEnabled(result)
+            "fskModulate" -> handleFskModulate(call, result)
+            "fskFeedAudio" -> handleFskFeedAudio(call, result)
+            "fskPullDemodulated" -> handleFskPullDemodulated(result)
             else -> result.notImplemented()
         }
     }
@@ -122,6 +128,53 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
         val alias = call.argument<String>("deletedAlias")
         Log.i("NadeFlutterPlugin", "Refresh preferred keys request received (deleted: $alias)")
         result.success(null)
+    }
+
+    // -------------------------------------------------------------------------
+    // 4-FSK Modulation handlers
+
+    private fun handleFskSetEnabled(call: MethodCall, result: Result) {
+        val enabled = call.argument<Boolean>("enabled") ?: true
+        val success = NadeCore.setFskEnabled(enabled)
+        result.success(success)
+    }
+
+    private fun handleFskIsEnabled(result: Result) {
+        val enabled = NadeCore.isFskEnabled()
+        result.success(enabled)
+    }
+
+    private fun handleFskModulate(call: MethodCall, result: Result) {
+        val data = call.argument<ByteArray>("data")
+        if (data == null || data.isEmpty()) {
+            result.error("INVALID_DATA", "Data must be a non-empty byte array", null)
+            return
+        }
+        // Calculate required output size: 320 samples per byte
+        val samplesNeeded = NadeCore.fskSamplesForBytes(data.size)
+        val pcmOut = ShortArray(samplesNeeded)
+        val produced = NadeCore.fskModulate(data, pcmOut)
+        // Return only the samples that were actually produced
+        val trimmed = if (produced < samplesNeeded) pcmOut.copyOf(produced) else pcmOut
+        result.success(trimmed)
+    }
+
+    private fun handleFskFeedAudio(call: MethodCall, result: Result) {
+        val pcm = call.argument<ShortArray>("pcm")
+        if (pcm == null || pcm.isEmpty()) {
+            result.error("INVALID_PCM", "PCM must be a non-empty short array", null)
+            return
+        }
+        NadeCore.fskFeedAudio(pcm, pcm.size)
+        result.success(null)
+    }
+
+    private fun handleFskPullDemodulated(result: Result) {
+        // Use a reasonable buffer size
+        val buffer = ByteArray(4096)
+        val pulled = NadeCore.fskPullDemodulated(buffer)
+        val trimmed = if (pulled > 0) buffer.copyOf(pulled) else ByteArray(0)
+        result.success(trimmed)
     }
 
     private fun ensureSession(ctx: Context) {

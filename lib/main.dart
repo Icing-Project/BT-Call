@@ -8,10 +8,11 @@ import 'src/theme/app_theme.dart';
 import 'src/screens/home_screen.dart';
 import 'src/services/bluetooth_audio_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Ensure the Bluetooth audio channel is ready.
   BluetoothAudioService.instance;
+  
   runApp(const MyApp());
 }
 

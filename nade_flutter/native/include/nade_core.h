@@ -24,6 +24,28 @@ int nade_set_config(const char *json);
 int nade_send_hangup_signal(void);
 int nade_consume_remote_hangup(void);
 
+// -------------------------------------------------------------------------
+// 4-FSK Modulation API
+// Converts encrypted data bytes <-> audio tones for "audio over audio" transport
+
+// Enable or disable 4-FSK modulation (enabled by default)
+int nade_fsk_set_enabled(bool enabled);
+bool nade_fsk_is_enabled(void);
+
+// Modulate data bytes into PCM audio samples (for transmission)
+// Returns number of PCM samples written to pcm_out
+size_t nade_fsk_modulate(const uint8_t *data, size_t len, int16_t *pcm_out, size_t max_samples);
+
+// Feed received PCM audio for demodulation
+int nade_fsk_feed_audio(const int16_t *pcm, size_t samples);
+
+// Pull demodulated bytes (call after feeding audio)
+size_t nade_fsk_pull_demodulated(uint8_t *out, size_t max_len);
+
+// Calculate number of PCM samples needed to modulate given bytes
+// (4 symbols per byte * 80 samples per symbol = 320 samples per byte)
+size_t nade_fsk_samples_for_bytes(size_t byte_count);
+
 #ifdef __cplusplus
 }
 #endif

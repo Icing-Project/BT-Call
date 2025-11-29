@@ -37,6 +37,26 @@
 #define OUT_CAPACITY 262144
 #define IN_CAPACITY 262144
 #define AUDIO_FRAME_SAMPLES 320
+
+// -------------------------------------------------------------------------
+// 4-FSK Modulation Configuration
+// Frequencies chosen for voice-band transmission (300-3400 Hz range)
+#define FSK_FREQ_00     1200    // Symbol 00 -> 1200 Hz
+#define FSK_FREQ_01     1600    // Symbol 01 -> 1600 Hz
+#define FSK_FREQ_10     2000    // Symbol 10 -> 2000 Hz
+#define FSK_FREQ_11     2400    // Symbol 11 -> 2400 Hz
+#define FSK_SAMPLE_RATE 8000    // 8 kHz sample rate
+#define FSK_SYMBOL_RATE 100     // 100 symbols/sec = 200 bits/sec
+#define FSK_SAMPLES_PER_SYMBOL (FSK_SAMPLE_RATE / FSK_SYMBOL_RATE)  // 80 samples
+#define FSK_AMPLITUDE   16000   // Amplitude for generated tones (< 32767)
+
+// Goertzel detection thresholds
+#define FSK_GOERTZEL_THRESHOLD 1000000.0f  // Minimum power to detect a tone
+#define FSK_GUARD_SAMPLES 8     // Guard samples at symbol boundaries
+
+// 4-FSK modulation/demodulation ring buffers
+#define FSK_MOD_CAPACITY 32768  // PCM samples for modulated output
+#define FSK_DEMOD_CAPACITY 8192 // Bytes for demodulated input
 #define HANDSHAKE_PAYLOAD_LEN 84
 #define FRAME_KIND_HANDSHAKE 0x01
 #define FRAME_KIND_CIPHER 0x02
@@ -128,6 +148,27 @@ static uint8_t g_in_ring[IN_CAPACITY];
 static size_t g_in_head = 0;
 static size_t g_in_size = 0;
 static pthread_mutex_t g_in_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// 4-FSK Modulation state
+static bool g_fsk_enabled = true;  // Enable/disable 4-FSK modulation
+static int16_t g_fsk_mod_ring[FSK_MOD_CAPACITY];  // Modulated PCM output
+static size_t g_fsk_mod_head = 0;
+static size_t g_fsk_mod_size = 0;
+static pthread_mutex_t g_fsk_mod_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static uint8_t g_fsk_demod_ring[FSK_DEMOD_CAPACITY];  // Demodulated bytes
+static size_t g_fsk_demod_head = 0;
+static size_t g_fsk_demod_size = 0;
+static pthread_mutex_t g_fsk_demod_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Phase accumulators for continuous phase modulation
+static float g_fsk_tx_phase = 0.0f;
+
+// Demodulator sample buffer for symbol detection
+static int16_t g_fsk_rx_samples[FSK_SAMPLES_PER_SYMBOL];
+static size_t g_fsk_rx_sample_count = 0;
+static uint8_t g_fsk_rx_byte = 0;
+static int g_fsk_rx_nibble_count = 0;
 
 // -------------------------------------------------------------------------
 // Utility helpers
@@ -775,6 +816,252 @@ static size_t adpcm_decode_block(const uint8_t *data, size_t len,
 }
 
 // -------------------------------------------------------------------------
+// 4-FSK Modulation / Demodulation
+// Converts bytes <-> audio tones for "audio over audio" transmission
+
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// Lookup table for 4-FSK frequencies (2 bits -> frequency)
+static const int kFskFrequencies[4] = {
+    FSK_FREQ_00,  // 00 -> 1200 Hz
+    FSK_FREQ_01,  // 01 -> 1600 Hz
+    FSK_FREQ_10,  // 10 -> 2000 Hz
+    FSK_FREQ_11   // 11 -> 2400 Hz
+};
+
+// Precomputed Goertzel coefficients for each frequency
+typedef struct {
+    float coeff;
+    float omega;
+} goertzel_coeff_t;
+
+static goertzel_coeff_t g_goertzel_coeffs[4];
+static bool g_goertzel_initialized = false;
+
+static void init_goertzel_coeffs(void) {
+    if (g_goertzel_initialized) return;
+    
+    for (int i = 0; i < 4; i++) {
+        float k = (float)(kFskFrequencies[i] * FSK_SAMPLES_PER_SYMBOL) / (float)FSK_SAMPLE_RATE;
+        g_goertzel_coeffs[i].omega = (2.0f * (float)M_PI * k) / (float)FSK_SAMPLES_PER_SYMBOL;
+        g_goertzel_coeffs[i].coeff = 2.0f * cosf(g_goertzel_coeffs[i].omega);
+    }
+    g_goertzel_initialized = true;
+}
+
+// Goertzel algorithm to detect power at a specific frequency
+static float goertzel_power(const int16_t *samples, size_t count, int freq_idx) {
+    if (freq_idx < 0 || freq_idx > 3) return 0.0f;
+    
+    float coeff = g_goertzel_coeffs[freq_idx].coeff;
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
+    
+    for (size_t i = 0; i < count; i++) {
+        s0 = (float)samples[i] + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    
+    // Power = s1^2 + s2^2 - coeff * s1 * s2
+    float power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    return power;
+}
+
+// Detect which of the 4 FSK frequencies is present in a symbol period
+static int detect_fsk_symbol(const int16_t *samples, size_t count) {
+    init_goertzel_coeffs();
+    
+    float max_power = 0.0f;
+    int best_symbol = 0;
+    
+    for (int i = 0; i < 4; i++) {
+        float power = goertzel_power(samples, count, i);
+        if (power > max_power) {
+            max_power = power;
+            best_symbol = i;
+        }
+    }
+    
+    // Only return valid symbol if power exceeds threshold
+    if (max_power < FSK_GOERTZEL_THRESHOLD) {
+        return -1;  // No valid symbol detected (silence or noise)
+    }
+    
+    return best_symbol;
+}
+
+// Modulate a single symbol (2 bits) into PCM samples
+// Uses continuous phase to avoid clicks at symbol boundaries
+static size_t fsk_modulate_symbol(int symbol, int16_t *out, size_t max_samples) {
+    if (symbol < 0 || symbol > 3 || max_samples < FSK_SAMPLES_PER_SYMBOL) {
+        return 0;
+    }
+    
+    int freq = kFskFrequencies[symbol];
+    float phase_increment = (2.0f * (float)M_PI * (float)freq) / (float)FSK_SAMPLE_RATE;
+    
+    for (size_t i = 0; i < FSK_SAMPLES_PER_SYMBOL; i++) {
+        out[i] = (int16_t)(FSK_AMPLITUDE * sinf(g_fsk_tx_phase));
+        g_fsk_tx_phase += phase_increment;
+        
+        // Keep phase in [0, 2*PI) to avoid float precision issues
+        if (g_fsk_tx_phase >= 2.0f * (float)M_PI) {
+            g_fsk_tx_phase -= 2.0f * (float)M_PI;
+        }
+    }
+    
+    return FSK_SAMPLES_PER_SYMBOL;
+}
+
+// Modulate a byte into PCM samples (4 symbols, each carrying 2 bits)
+// Returns number of samples written
+static size_t fsk_modulate_byte(uint8_t byte, int16_t *out, size_t max_samples) {
+    if (max_samples < FSK_SAMPLES_PER_SYMBOL * 4) {
+        return 0;
+    }
+    
+    size_t total = 0;
+    
+    // Extract 4 symbols (2 bits each) from the byte, LSB first
+    for (int i = 0; i < 4; i++) {
+        int symbol = (byte >> (i * 2)) & 0x03;
+        size_t written = fsk_modulate_symbol(symbol, out + total, max_samples - total);
+        total += written;
+    }
+    
+    return total;
+}
+
+// Modulate a buffer of bytes into PCM audio
+// Returns number of PCM samples written
+static size_t fsk_modulate_buffer(const uint8_t *data, size_t len, 
+                                   int16_t *out, size_t max_samples) {
+    size_t total_samples = 0;
+    
+    for (size_t i = 0; i < len; i++) {
+        size_t needed = FSK_SAMPLES_PER_SYMBOL * 4;
+        if (total_samples + needed > max_samples) {
+            break;
+        }
+        
+        size_t written = fsk_modulate_byte(data[i], out + total_samples, 
+                                           max_samples - total_samples);
+        total_samples += written;
+    }
+    
+    return total_samples;
+}
+
+// Push modulated PCM samples to the FSK output ring
+static void fsk_mod_push(const int16_t *samples, size_t count) {
+    pthread_mutex_lock(&g_fsk_mod_mutex);
+    for (size_t i = 0; i < count; i++) {
+        size_t tail = (g_fsk_mod_head + g_fsk_mod_size) % FSK_MOD_CAPACITY;
+        g_fsk_mod_ring[tail] = samples[i];
+        if (g_fsk_mod_size == FSK_MOD_CAPACITY) {
+            g_fsk_mod_head = (g_fsk_mod_head + 1) % FSK_MOD_CAPACITY;
+        } else {
+            g_fsk_mod_size++;
+        }
+    }
+    pthread_mutex_unlock(&g_fsk_mod_mutex);
+}
+
+// Pull modulated PCM samples from the FSK output ring
+static size_t fsk_mod_pull(int16_t *out, size_t max_samples) {
+    pthread_mutex_lock(&g_fsk_mod_mutex);
+    size_t to_read = min_size(max_samples, g_fsk_mod_size);
+    for (size_t i = 0; i < to_read; i++) {
+        out[i] = g_fsk_mod_ring[g_fsk_mod_head];
+        g_fsk_mod_head = (g_fsk_mod_head + 1) % FSK_MOD_CAPACITY;
+    }
+    g_fsk_mod_size -= to_read;
+    pthread_mutex_unlock(&g_fsk_mod_mutex);
+    return to_read;
+}
+
+// Push demodulated bytes to the FSK demod ring
+static void fsk_demod_push(const uint8_t *data, size_t len) {
+    pthread_mutex_lock(&g_fsk_demod_mutex);
+    for (size_t i = 0; i < len; i++) {
+        size_t tail = (g_fsk_demod_head + g_fsk_demod_size) % FSK_DEMOD_CAPACITY;
+        g_fsk_demod_ring[tail] = data[i];
+        if (g_fsk_demod_size == FSK_DEMOD_CAPACITY) {
+            g_fsk_demod_head = (g_fsk_demod_head + 1) % FSK_DEMOD_CAPACITY;
+        } else {
+            g_fsk_demod_size++;
+        }
+    }
+    pthread_mutex_unlock(&g_fsk_demod_mutex);
+}
+
+// Pull demodulated bytes from the FSK demod ring
+static size_t fsk_demod_pull(uint8_t *out, size_t max_len) {
+    pthread_mutex_lock(&g_fsk_demod_mutex);
+    size_t to_read = min_size(max_len, g_fsk_demod_size);
+    for (size_t i = 0; i < to_read; i++) {
+        out[i] = g_fsk_demod_ring[g_fsk_demod_head];
+        g_fsk_demod_head = (g_fsk_demod_head + 1) % FSK_DEMOD_CAPACITY;
+    }
+    g_fsk_demod_size -= to_read;
+    pthread_mutex_unlock(&g_fsk_demod_mutex);
+    return to_read;
+}
+
+// Process incoming PCM samples and demodulate to bytes
+// Call this with speaker/received audio samples
+static void fsk_demodulate_samples(const int16_t *samples, size_t count) {
+    init_goertzel_coeffs();
+    
+    for (size_t i = 0; i < count; i++) {
+        g_fsk_rx_samples[g_fsk_rx_sample_count++] = samples[i];
+        
+        // When we have a full symbol's worth of samples
+        if (g_fsk_rx_sample_count >= FSK_SAMPLES_PER_SYMBOL) {
+            // Detect which symbol (0-3) is present
+            int symbol = detect_fsk_symbol(g_fsk_rx_samples, g_fsk_rx_sample_count);
+            
+            if (symbol >= 0) {
+                // Accumulate symbol into current byte (LSB first)
+                g_fsk_rx_byte |= (uint8_t)(symbol << (g_fsk_rx_nibble_count * 2));
+                g_fsk_rx_nibble_count++;
+                
+                // When we have 4 symbols (8 bits), output the byte
+                if (g_fsk_rx_nibble_count >= 4) {
+                    fsk_demod_push(&g_fsk_rx_byte, 1);
+                    g_fsk_rx_byte = 0;
+                    g_fsk_rx_nibble_count = 0;
+                }
+            }
+            
+            g_fsk_rx_sample_count = 0;
+        }
+    }
+}
+
+// Reset FSK state (call when starting new session)
+static void fsk_reset_state(void) {
+    g_fsk_tx_phase = 0.0f;
+    g_fsk_rx_sample_count = 0;
+    g_fsk_rx_byte = 0;
+    g_fsk_rx_nibble_count = 0;
+    
+    pthread_mutex_lock(&g_fsk_mod_mutex);
+    g_fsk_mod_head = 0;
+    g_fsk_mod_size = 0;
+    pthread_mutex_unlock(&g_fsk_mod_mutex);
+    
+    pthread_mutex_lock(&g_fsk_demod_mutex);
+    g_fsk_demod_head = 0;
+    g_fsk_demod_size = 0;
+    pthread_mutex_unlock(&g_fsk_demod_mutex);
+}
+
+// -------------------------------------------------------------------------
 // Session + framing helpers
 
 static void session_reset_locked(void) {
@@ -794,6 +1081,7 @@ static void session_reset_locked(void) {
     }
     reset_adpcm(&g_session.enc_state);
     reset_adpcm(&g_session.dec_state);
+    fsk_reset_state();  // Reset 4-FSK modulation state
 }
 
 static void queue_frame(uint8_t kind, const uint8_t *payload, uint16_t length) {
@@ -1381,10 +1669,72 @@ int nade_set_config(const char *json) {
     pthread_mutex_lock(&g_session_mutex);
     g_config.encrypt = parse_bool_flag(json, "\"encrypt\"", g_config.encrypt);
     g_config.decrypt = parse_bool_flag(json, "\"decrypt\"", g_config.decrypt);
+    g_fsk_enabled = parse_bool_flag(json, "\"fsk_enabled\"", g_fsk_enabled);
     g_session.outbound_encrypted = g_config.encrypt && g_session.peer_accepts_encrypt;
     g_session.inbound_encrypted = g_config.decrypt && g_session.peer_sends_encrypt;
     pthread_mutex_unlock(&g_session_mutex);
+    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Config updated: fsk_enabled=%d", g_fsk_enabled);
     return 0;
+}
+
+// -------------------------------------------------------------------------
+// 4-FSK Public API
+
+int nade_fsk_set_enabled(bool enabled) {
+    pthread_mutex_lock(&g_session_mutex);
+    g_fsk_enabled = enabled;
+    if (enabled) {
+        fsk_reset_state();
+    }
+    pthread_mutex_unlock(&g_session_mutex);
+    __android_log_print(ANDROID_LOG_INFO, TAG, "4-FSK modulation %s", enabled ? "enabled" : "disabled");
+    return 0;
+}
+
+bool nade_fsk_is_enabled(void) {
+    pthread_mutex_lock(&g_session_mutex);
+    bool enabled = g_fsk_enabled;
+    pthread_mutex_unlock(&g_session_mutex);
+    return enabled;
+}
+
+// Modulate outgoing frame bytes into PCM audio tones
+// Call after nade_generate_outgoing_frame to convert bytes to audio
+size_t nade_fsk_modulate(const uint8_t *data, size_t len, int16_t *pcm_out, size_t max_samples) {
+    if (!data || len == 0 || !pcm_out || max_samples == 0) {
+        return 0;
+    }
+    if (!g_fsk_enabled) {
+        return 0;  // FSK disabled, use raw bytes instead
+    }
+    return fsk_modulate_buffer(data, len, pcm_out, max_samples);
+}
+
+// Demodulate incoming PCM audio into bytes
+// Call with received audio samples, then call nade_fsk_pull_demodulated to get bytes
+int nade_fsk_feed_audio(const int16_t *pcm, size_t samples) {
+    if (!pcm || samples == 0) {
+        return -1;
+    }
+    if (!g_fsk_enabled) {
+        return -1;  // FSK disabled
+    }
+    fsk_demodulate_samples(pcm, samples);
+    return 0;
+}
+
+// Pull demodulated bytes after feeding audio
+size_t nade_fsk_pull_demodulated(uint8_t *out, size_t max_len) {
+    if (!out || max_len == 0) {
+        return 0;
+    }
+    return fsk_demod_pull(out, max_len);
+}
+
+// Get estimated samples needed to modulate given number of bytes
+size_t nade_fsk_samples_for_bytes(size_t byte_count) {
+    // 4 symbols per byte, FSK_SAMPLES_PER_SYMBOL samples per symbol
+    return byte_count * 4 * FSK_SAMPLES_PER_SYMBOL;
 }
 
 // JNI bridge helpers -------------------------------------------------------
@@ -1510,4 +1860,73 @@ Java_com_icing_nade_1flutter_NadeCore_nativeSetConfig(JNIEnv *env, jobject thiz,
     int rc = nade_set_config(chars);
     (*env)->ReleaseStringUTFChars(env, json, chars);
     return rc;
+}
+
+// -------------------------------------------------------------------------
+// 4-FSK JNI Bridge
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskSetEnabled(JNIEnv *env, jobject thiz, jboolean enabled) {
+    (void)env;
+    (void)thiz;
+    return nade_fsk_set_enabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskIsEnabled(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    return nade_fsk_is_enabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskModulate(JNIEnv *env, jobject thiz,
+                                                         jbyteArray data, jint data_len,
+                                                         jshortArray pcm_out, jint max_samples) {
+    (void)thiz;
+    if (data == NULL || pcm_out == NULL) {
+        return 0;
+    }
+    jbyte *data_ptr = (*env)->GetByteArrayElements(env, data, NULL);
+    jshort *pcm_ptr = (*env)->GetShortArrayElements(env, pcm_out, NULL);
+    
+    size_t produced = nade_fsk_modulate((const uint8_t *)data_ptr, (size_t)data_len,
+                                        (int16_t *)pcm_ptr, (size_t)max_samples);
+    
+    (*env)->ReleaseByteArrayElements(env, data, data_ptr, JNI_ABORT);
+    (*env)->ReleaseShortArrayElements(env, pcm_out, pcm_ptr, 0);
+    return (jint)produced;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskFeedAudio(JNIEnv *env, jobject thiz,
+                                                          jshortArray pcm, jint samples) {
+    (void)thiz;
+    if (pcm == NULL) {
+        return -1;
+    }
+    jshort *ptr = (*env)->GetShortArrayElements(env, pcm, NULL);
+    int rc = nade_fsk_feed_audio((const int16_t *)ptr, (size_t)samples);
+    (*env)->ReleaseShortArrayElements(env, pcm, ptr, JNI_ABORT);
+    return rc;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskPullDemodulated(JNIEnv *env, jobject thiz,
+                                                                jbyteArray out, jint max_len) {
+    (void)thiz;
+    if (out == NULL) {
+        return 0;
+    }
+    jbyte *ptr = (*env)->GetByteArrayElements(env, out, NULL);
+    size_t pulled = nade_fsk_pull_demodulated((uint8_t *)ptr, (size_t)max_len);
+    (*env)->ReleaseByteArrayElements(env, out, ptr, 0);
+    return (jint)pulled;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeFskSamplesForBytes(JNIEnv *env, jobject thiz, jint byte_count) {
+    (void)env;
+    (void)thiz;
+    return (jint)nade_fsk_samples_for_bytes((size_t)byte_count);
 }

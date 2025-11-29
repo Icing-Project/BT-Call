@@ -12,4 +12,5 @@ target_compile_definitions(nade_core PRIVATE -D_POSIX_C_SOURCE=200112L)
 
 find_library(log-lib log)
 
-target_link_libraries(nade_core PRIVATE ${log-lib})
+# Link math library for sin/cos functions used in 4-FSK modulation
+target_link_libraries(nade_core PRIVATE ${log-lib} m)
