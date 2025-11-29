@@ -34,7 +34,8 @@ internal class NadeSession(
 
     // 4-FSK Audio Transport Mode
     // When enabled, encrypted data is modulated to audio tones for "audio over audio" transmission
-    @Volatile private var fskModeEnabled = false
+    // Enabled by default - developers can disable with Nade.setFskMode(false) if needed
+    @Volatile private var fskModeEnabled = true
     private val fskSamplesPerByte = 320 // 4 symbols * 80 samples/symbol at 8kHz
     private val fskModulatedBuffer = ShortArray(2048 * fskSamplesPerByte) // PCM output for modulated data
     private val fskDemodulatedBuffer = ByteArray(4096) // Demodulated bytes from received audio

@@ -558,11 +558,8 @@ class BluetoothProvider extends ChangeNotifier {
       await Nade.initialize(identityKeySeed: seed, force: _nadeEverInitialized);
       _nadeEverInitialized = true;
       _nadeReady = true;
-      
-      // Enable 4-FSK audio transport mode
-      // This modulates encrypted data into audio tones (1200/1600/2000/2400 Hz)
-      // for transmission over voice channels
-      await Nade.setFskMode(true);
+      // 4-FSK audio transport mode is enabled by default
+      // Use Nade.setFskMode(false) to disable if needed
     }();
     await _nadeInitFuture;
   }
