@@ -98,6 +98,8 @@ class _ContactsScreenState extends State<ContactsScreen>
       }
       if (_nameController.text.trim().isEmpty) {
         _nameController.text = deviceName;
+        // Also save the prefilled name so it's used in calls
+        await _sharePrefs.saveDisplayName(deviceName);
       }
     } catch (e) {
       debugPrint('Failed to fetch local device name: $e');

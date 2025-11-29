@@ -493,7 +493,17 @@ class BluetoothProvider extends ChangeNotifier {
 
   Future<Map<String, String>> _buildLocalTransportProfile() async {
     final discoveryHint = await _ensureDiscoveryHint();
-    final displayName = (await _shareProfileRepository.loadDisplayName())?.trim();
+    var displayName = (await _shareProfileRepository.loadDisplayName())?.trim();
+    
+    // Fall back to local Bluetooth device name if no display name is saved
+    if (displayName == null || displayName.isEmpty) {
+      try {
+        final info = await _service.getLocalDeviceInfo();
+        displayName = info['name']?.trim();
+      } catch (_) {
+        // Ignore errors fetching device name
+      }
+    }
     
     // Ensure we have a valid key (this will auto-create one if needed)
     final savedAlias = await _shareProfileRepository.loadKeyAlias();
