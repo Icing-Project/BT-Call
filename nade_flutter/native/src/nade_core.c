@@ -150,7 +150,7 @@ static size_t g_in_size = 0;
 static pthread_mutex_t g_in_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // 4-FSK Modulation state
-static bool g_fsk_enabled = true;  // Enable/disable 4-FSK modulation
+static bool g_fsk_enabled = false;  // Enable/disable 4-FSK modulation (only for audio channel transport)
 static int16_t g_fsk_mod_ring[FSK_MOD_CAPACITY];  // Modulated PCM output
 static size_t g_fsk_mod_head = 0;
 static size_t g_fsk_mod_size = 0;
