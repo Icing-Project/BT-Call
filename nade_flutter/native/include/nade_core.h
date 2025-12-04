@@ -46,6 +46,29 @@ size_t nade_fsk_pull_demodulated(uint8_t *out, size_t max_len);
 // (4 symbols per byte * 80 samples per symbol = 320 samples per byte)
 size_t nade_fsk_samples_for_bytes(size_t byte_count);
 
+// -------------------------------------------------------------------------
+// Reed-Solomon Error Correction API
+// RS(255, 223) - can correct up to 16 byte errors per block
+
+// Enable or disable Reed-Solomon error correction
+// When enabled, RS encoding is automatically applied to FSK transmissions
+int nade_rs_set_enabled(bool enabled);
+bool nade_rs_is_enabled(void);
+
+// Encode data with Reed-Solomon parity (adds 32 parity bytes)
+// Returns total encoded length, or 0 on error
+size_t nade_rs_encode(const uint8_t *data, size_t len, uint8_t *out, size_t max_out);
+
+// Decode and correct errors in Reed-Solomon codeword
+// Corrects data in-place, returns number of errors corrected or -1 if uncorrectable
+int nade_rs_decode(uint8_t *codeword, size_t len);
+
+// Get encoded length for given data length (data_len + 32 parity bytes)
+size_t nade_rs_encoded_len(size_t data_len);
+
+// Get data length from encoded length (encoded_len - 32 parity bytes)
+size_t nade_rs_data_len(size_t encoded_len);
+
 #ifdef __cplusplus
 }
 #endif

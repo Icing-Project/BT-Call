@@ -596,6 +596,7 @@ class BluetoothProvider extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      await Nade.setFskMode(false); // Enable 4-FSK audio transport mode
       await _applyNadeConfig();
       bool started;
       if (_callRole == _CallRole.server) {

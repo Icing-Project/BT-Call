@@ -4,6 +4,7 @@ project(nade_core LANGUAGES C)
 add_library(nade_core SHARED
     src/monocypher.c
     src/nade_core.c
+    src/reed_solomon.c
 )
 
 target_include_directories(nade_core PRIVATE include)

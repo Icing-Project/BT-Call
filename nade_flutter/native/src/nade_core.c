@@ -2,11 +2,13 @@
  * Copyright (c) 2024 Icing Project
  *
  * NADE core implementation responsible for Noise-style key exchange,
- * ChaCha20-Poly1305 transport security, and ADPCM audio framing.
+ * ChaCha20-Poly1305 transport security, ADPCM audio framing, and
+ * Reed-Solomon error correction.
  */
 
 #include "nade_core.h"
 #include "monocypher.h"
+#include "reed_solomon.h"
 
 #include <android/log.h>
 #include <jni.h>
@@ -169,6 +171,19 @@ static int16_t g_fsk_rx_samples[FSK_SAMPLES_PER_SYMBOL];
 static size_t g_fsk_rx_sample_count = 0;
 static uint8_t g_fsk_rx_byte = 0;
 static int g_fsk_rx_nibble_count = 0;
+
+// -------------------------------------------------------------------------
+// Reed-Solomon Error Correction Configuration
+// RS is applied to frames when using 4-FSK mode (noisy audio channel)
+static bool g_rs_enabled = true;  // Enable/disable Reed-Solomon (enabled by default for FSK)
+static bool g_rs_initialized = false;
+
+// Reed-Solomon statistics for logging
+static uint64_t g_rs_encode_count = 0;
+static uint64_t g_rs_decode_count = 0;
+static uint64_t g_rs_errors_corrected = 0;
+static uint64_t g_rs_uncorrectable = 0;
+static uint64_t g_rs_clean_frames = 0;
 
 // -------------------------------------------------------------------------
 // Utility helpers
@@ -1737,6 +1752,128 @@ size_t nade_fsk_samples_for_bytes(size_t byte_count) {
     return byte_count * 4 * FSK_SAMPLES_PER_SYMBOL;
 }
 
+// -------------------------------------------------------------------------
+// Reed-Solomon Error Correction Implementation
+// -------------------------------------------------------------------------
+
+static void ensure_rs_initialized(void) {
+    if (!g_rs_initialized) {
+        rs_init();
+        g_rs_initialized = true;
+        __android_log_print(ANDROID_LOG_INFO, TAG, "Reed-Solomon initialized (RS(255,223), t=16)");
+    }
+}
+
+int nade_rs_set_enabled(bool enabled) {
+    ensure_rs_initialized();
+    pthread_mutex_lock(&g_session_mutex);
+    g_rs_enabled = enabled;
+    // Reset statistics when RS is toggled
+    g_rs_encode_count = 0;
+    g_rs_decode_count = 0;
+    g_rs_errors_corrected = 0;
+    g_rs_uncorrectable = 0;
+    g_rs_clean_frames = 0;
+    pthread_mutex_unlock(&g_session_mutex);
+    __android_log_print(ANDROID_LOG_INFO, TAG, 
+                        "╔══════════════════════════════════════════════════════════╗");
+    __android_log_print(ANDROID_LOG_INFO, TAG, 
+                        "║  Reed-Solomon FEC: %s                              ║",
+                        enabled ? "ENABLED " : "DISABLED");
+    __android_log_print(ANDROID_LOG_INFO, TAG, 
+                        "║  RS(255,223) - Can correct up to 16 byte errors/block   ║");
+    __android_log_print(ANDROID_LOG_INFO, TAG, 
+                        "╚══════════════════════════════════════════════════════════╝");
+    return 0;
+}
+
+bool nade_rs_is_enabled(void) {
+    pthread_mutex_lock(&g_session_mutex);
+    bool enabled = g_rs_enabled;
+    pthread_mutex_unlock(&g_session_mutex);
+    return enabled;
+}
+
+size_t nade_rs_encode(const uint8_t *data, size_t len, uint8_t *out, size_t max_out) {
+    ensure_rs_initialized();
+    if (!data || len == 0 || !out) {
+        return 0;
+    }
+    if (len > RS_DATA_SIZE) {
+        __android_log_print(ANDROID_LOG_WARN, TAG, 
+                           "RS encode: data too large (%zu > %d), truncating", len, RS_DATA_SIZE);
+        len = RS_DATA_SIZE;
+    }
+    size_t needed = rs_encoded_len(len);
+    if (max_out < needed) {
+        __android_log_print(ANDROID_LOG_WARN, TAG,
+                           "RS encode: output buffer too small (%zu < %zu)", max_out, needed);
+        return 0;
+    }
+    size_t result = rs_encode(data, len, out);
+    if (result > 0) {
+        g_rs_encode_count++;
+        // Log every 50 frames or first 5
+        if (g_rs_encode_count <= 5 || g_rs_encode_count % 50 == 0) {
+            __android_log_print(ANDROID_LOG_INFO, TAG, 
+                "🛡️ RS ENCODE #%llu: %zu data bytes + 32 parity = %zu bytes",
+                (unsigned long long)g_rs_encode_count, len, result);
+        }
+    }
+    return result;
+}
+
+int nade_rs_decode(uint8_t *codeword, size_t len) {
+    ensure_rs_initialized();
+    if (!codeword || len <= RS_PARITY_SIZE) {
+        return -1;
+    }
+    int errors = rs_decode(codeword, len);
+    g_rs_decode_count++;
+    
+    if (errors > 0) {
+        g_rs_errors_corrected += errors;
+        __android_log_print(ANDROID_LOG_INFO, TAG, 
+            "🔧 RS DECODE #%llu: CORRECTED %d errors! (total corrected: %llu)",
+            (unsigned long long)g_rs_decode_count, errors, 
+            (unsigned long long)g_rs_errors_corrected);
+    } else if (errors < 0) {
+        g_rs_uncorrectable++;
+        __android_log_print(ANDROID_LOG_WARN, TAG, 
+            "❌ RS DECODE #%llu: UNCORRECTABLE (too many errors, >16 bytes)",
+            (unsigned long long)g_rs_decode_count);
+    } else {
+        g_rs_clean_frames++;
+        // Log clean frames less frequently
+        if (g_rs_clean_frames <= 3 || g_rs_clean_frames % 100 == 0) {
+            __android_log_print(ANDROID_LOG_DEBUG, TAG, 
+                "✓ RS DECODE #%llu: Clean frame (no errors) - %llu clean total",
+                (unsigned long long)g_rs_decode_count,
+                (unsigned long long)g_rs_clean_frames);
+        }
+    }
+    
+    // Print summary every 100 decodes
+    if (g_rs_decode_count % 100 == 0) {
+        __android_log_print(ANDROID_LOG_INFO, TAG, 
+            "📊 RS STATS: %llu decoded | %llu clean | %llu errors fixed | %llu uncorrectable",
+            (unsigned long long)g_rs_decode_count,
+            (unsigned long long)g_rs_clean_frames,
+            (unsigned long long)g_rs_errors_corrected,
+            (unsigned long long)g_rs_uncorrectable);
+    }
+    
+    return errors;
+}
+
+size_t nade_rs_encoded_len(size_t data_len) {
+    return rs_encoded_len(data_len);
+}
+
+size_t nade_rs_data_len(size_t encoded_len) {
+    return rs_data_len(encoded_len);
+}
+
 // JNI bridge helpers -------------------------------------------------------
 
 JNIEXPORT jint JNICALL
@@ -1929,4 +2066,80 @@ Java_com_icing_nade_1flutter_NadeCore_nativeFskSamplesForBytes(JNIEnv *env, jobj
     (void)env;
     (void)thiz;
     return (jint)nade_fsk_samples_for_bytes((size_t)byte_count);
+}
+
+// Reed-Solomon JNI bridges -------------------------------------------------
+
+// Get RS statistics as a comma-separated string for logging
+JNIEXPORT jstring JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsGetStats(JNIEnv *env, jobject thiz) {
+    (void)thiz;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%llu,%llu,%llu,%llu,%llu",
+             (unsigned long long)g_rs_encode_count,
+             (unsigned long long)g_rs_decode_count,
+             (unsigned long long)g_rs_clean_frames,
+             (unsigned long long)g_rs_errors_corrected,
+             (unsigned long long)g_rs_uncorrectable);
+    return (*env)->NewStringUTF(env, buf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsSetEnabled(JNIEnv *env, jobject thiz, jboolean enabled) {
+    (void)env;
+    (void)thiz;
+    return nade_rs_set_enabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsIsEnabled(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+    return nade_rs_is_enabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsEncode(JNIEnv *env, jobject thiz,
+                                                      jbyteArray data, jint data_len,
+                                                      jbyteArray out, jint max_out) {
+    (void)thiz;
+    if (data == NULL || out == NULL) {
+        return 0;
+    }
+    jbyte *data_ptr = (*env)->GetByteArrayElements(env, data, NULL);
+    jbyte *out_ptr = (*env)->GetByteArrayElements(env, out, NULL);
+    
+    size_t encoded = nade_rs_encode((const uint8_t *)data_ptr, (size_t)data_len,
+                                     (uint8_t *)out_ptr, (size_t)max_out);
+    
+    (*env)->ReleaseByteArrayElements(env, data, data_ptr, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, out, out_ptr, 0);
+    return (jint)encoded;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsDecode(JNIEnv *env, jobject thiz,
+                                                      jbyteArray codeword, jint len) {
+    (void)thiz;
+    if (codeword == NULL) {
+        return -1;
+    }
+    jbyte *ptr = (*env)->GetByteArrayElements(env, codeword, NULL);
+    int errors = nade_rs_decode((uint8_t *)ptr, (size_t)len);
+    (*env)->ReleaseByteArrayElements(env, codeword, ptr, 0);
+    return errors;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsEncodedLen(JNIEnv *env, jobject thiz, jint data_len) {
+    (void)env;
+    (void)thiz;
+    return (jint)nade_rs_encoded_len((size_t)data_len);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_icing_nade_1flutter_NadeCore_nativeRsDataLen(JNIEnv *env, jobject thiz, jint encoded_len) {
+    (void)env;
+    (void)thiz;
+    return (jint)nade_rs_data_len((size_t)encoded_len);
 }

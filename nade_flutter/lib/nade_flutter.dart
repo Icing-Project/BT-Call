@@ -156,6 +156,73 @@ class Nade {
     return byteCount * 4 * 80; // 320 samples per byte
   }
 
+  // -------------------------------------------------------------------------
+  // Reed-Solomon Error Correction API
+  // RS(255, 223) - can correct up to 16 byte errors per 255-byte block
+
+  /// Parity bytes added by Reed-Solomon encoding
+  static const int rsParitySize = 32;
+
+  /// Maximum data bytes per RS block
+  static const int rsMaxDataSize = 223;
+
+  /// Enable or disable Reed-Solomon error correction.
+  /// When enabled, RS encoding is automatically applied to FSK transmissions.
+  static Future<bool> setRsEnabled(bool enabled) async {
+    await _waitForInit();
+    final result = await _channel.invokeMethod<bool>('rsSetEnabled', {
+      'enabled': enabled,
+    });
+    return result ?? false;
+  }
+
+  /// Check if Reed-Solomon error correction is currently enabled.
+  static Future<bool> isRsEnabled() async {
+    await _waitForInit();
+    final result = await _channel.invokeMethod<bool>('rsIsEnabled');
+    return result ?? true;
+  }
+
+  /// Encode data with Reed-Solomon parity.
+  /// Adds 32 parity bytes that can correct up to 16 byte errors.
+  /// @param data The data to encode (max 223 bytes per call)
+  /// @return Encoded data with parity (data.length + 32 bytes)
+  static Future<Uint8List> rsEncode(Uint8List data) async {
+    await _waitForInit();
+    final result = await _channel.invokeMethod<Uint8List>('rsEncode', {
+      'data': data,
+    });
+    return result ?? Uint8List(0);
+  }
+
+  /// Decode and correct errors in Reed-Solomon codeword.
+  /// @param codeword The received data with parity
+  /// @return Tuple of (corrected data without parity, errors corrected)
+  ///         Returns null if uncorrectable
+  static Future<({Uint8List data, int errors})?> rsDecode(Uint8List codeword) async {
+    await _waitForInit();
+    final result = await _channel.invokeMethod<Map>('rsDecode', {
+      'codeword': codeword,
+    });
+    if (result == null) return null;
+    final errors = result['errors'] as int? ?? -1;
+    if (errors < 0) return null; // Uncorrectable
+    final data = result['data'] as Uint8List? ?? Uint8List(0);
+    return (data: data, errors: errors);
+  }
+
+  /// Get encoded length for given data length.
+  /// @return data.length + 32 parity bytes
+  static int rsEncodedLen(int dataLen) {
+    return dataLen + rsParitySize;
+  }
+
+  /// Get data length from encoded length.
+  /// @return encodedLen - 32 parity bytes
+  static int rsDataLen(int encodedLen) {
+    return encodedLen > rsParitySize ? encodedLen - rsParitySize : 0;
+  }
+
   static Future<void> _waitForInit() async {
     if (_isInitialized) return;
     if (_initializing != null) {

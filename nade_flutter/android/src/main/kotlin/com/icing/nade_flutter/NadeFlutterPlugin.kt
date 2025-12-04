@@ -14,6 +14,11 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
     private var applicationContext: Context? = null
     private var session: NadeSession? = null
     private var initialized = false
+    
+    // Pending configuration to apply when session is created
+    // This handles the case where setFskMode() is called before startServer()/startClient()
+    private var pendingFskMode: Boolean? = null
+    private var pendingConfig: MutableMap<String, Any?> = mutableMapOf()
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         applicationContext = binding.applicationContext
@@ -45,6 +50,11 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
             "fskModulate" -> handleFskModulate(call, result)
             "fskFeedAudio" -> handleFskFeedAudio(call, result)
             "fskPullDemodulated" -> handleFskPullDemodulated(result)
+            // Reed-Solomon Error Correction methods
+            "rsSetEnabled" -> handleRsSetEnabled(call, result)
+            "rsIsEnabled" -> handleRsIsEnabled(result)
+            "rsEncode" -> handleRsEncode(call, result)
+            "rsDecode" -> handleRsDecode(call, result)
             else -> result.notImplemented()
         }
     }
@@ -73,8 +83,24 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
         }
         val peerKey = call.argument<String>("peerPublicKeyBase64") ?: ""
         ensureSession(ctx)
+        applyPendingConfiguration()
         val success = session?.startServerSession(peerKey) ?: false
         result.success(success)
+    }
+    
+    private fun applyPendingConfiguration() {
+        val s = session ?: return
+        
+        // Apply pending FSK mode FIRST (before threads start reading it)
+        pendingFskMode?.let { fsk ->
+            s.setFskModeEnabled(fsk)
+            Log.i("NadeFlutterPlugin", "Applied pending FSK mode before session start: $fsk")
+        }
+        
+        // Apply other pending configuration
+        if (pendingConfig.isNotEmpty()) {
+            s.updateConfiguration(pendingConfig)
+        }
     }
 
     private fun handleStartClient(call: MethodCall, result: Result) {
@@ -88,6 +114,7 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
         }
         val peerKey = call.argument<String>("peerPublicKeyBase64") ?: ""
         ensureSession(ctx)
+        applyPendingConfiguration()
         val success = session?.startClientSession(peerKey) ?: false
         result.success(success)
     }
@@ -105,7 +132,28 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
             result.error("INVALID_CONFIG", "Configuration map expected", null)
             return
         }
-        session?.updateConfiguration(cfg as Map<String, Any?>)
+        @Suppress("UNCHECKED_CAST")
+        val configMap = cfg as Map<String, Any?>
+        
+        // Check for fsk_mode in configuration
+        val fskMode = configMap["fsk_mode"]
+        if (fskMode is Boolean) {
+            pendingFskMode = fskMode
+            Log.i("NadeFlutterPlugin", "FSK mode set to $fskMode (pending until session starts)")
+        }
+        
+        // Store all config for later application
+        pendingConfig.putAll(configMap)
+        
+        // Apply immediately if session exists
+        session?.let { s ->
+            s.updateConfiguration(configMap)
+            // Apply pending FSK mode directly
+            pendingFskMode?.let { fsk ->
+                s.setFskModeEnabled(fsk)
+                Log.i("NadeFlutterPlugin", "Applied pending FSK mode: $fsk")
+            }
+        }
         result.success(null)
     }
 
@@ -175,6 +223,61 @@ class NadeFlutterPlugin : FlutterPlugin, MethodCallHandler {
         val pulled = NadeCore.fskPullDemodulated(buffer)
         val trimmed = if (pulled > 0) buffer.copyOf(pulled) else ByteArray(0)
         result.success(trimmed)
+    }
+
+    // -------------------------------------------------------------------------
+    // Reed-Solomon Error Correction Handlers
+    // -------------------------------------------------------------------------
+
+    private fun handleRsSetEnabled(call: MethodCall, result: Result) {
+        val enabled = call.argument<Boolean>("enabled") ?: true
+        val success = NadeCore.setRsEnabled(enabled)
+        result.success(success)
+    }
+
+    private fun handleRsIsEnabled(result: Result) {
+        result.success(NadeCore.isRsEnabled())
+    }
+
+    private fun handleRsEncode(call: MethodCall, result: Result) {
+        val data = call.argument<ByteArray>("data")
+        if (data == null || data.isEmpty()) {
+            result.error("INVALID_DATA", "Data must be a non-empty byte array", null)
+            return
+        }
+        val encodedLen = NadeCore.rsEncodedLen(data.size)
+        val out = ByteArray(encodedLen)
+        val produced = NadeCore.rsEncode(data, out)
+        if (produced > 0) {
+            result.success(out.copyOf(produced))
+        } else {
+            result.error("ENCODE_FAILED", "Reed-Solomon encoding failed", null)
+        }
+    }
+
+    private fun handleRsDecode(call: MethodCall, result: Result) {
+        val codeword = call.argument<ByteArray>("codeword")
+        if (codeword == null || codeword.size <= 32) {
+            result.error("INVALID_CODEWORD", "Codeword must be at least 33 bytes (data + 32 parity)", null)
+            return
+        }
+        // Decode in-place
+        val errors = NadeCore.rsDecode(codeword)
+        if (errors >= 0) {
+            // Extract data portion (without parity bytes)
+            val dataLen = NadeCore.rsDataLen(codeword.size)
+            val data = codeword.copyOf(dataLen)
+            result.success(mapOf(
+                "data" to data,
+                "errors" to errors
+            ))
+        } else {
+            // Uncorrectable errors
+            result.success(mapOf(
+                "data" to ByteArray(0),
+                "errors" to -1
+            ))
+        }
     }
 
     private fun ensureSession(ctx: Context) {

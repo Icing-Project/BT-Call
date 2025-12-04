@@ -388,7 +388,18 @@ internal class NadeSession(
 
     private fun transmitLoop() {
         Log.d("NadeSession", "transmitLoop started (FSK mode: $fskModeEnabled)")
+        
+        // Log RS status on start
+        if (fskModeEnabled && NadeCore.isRsEnabled()) {
+            Log.i("NadeSession", "╔══════════════════════════════════════════════════════════╗")
+            Log.i("NadeSession", "║  Reed-Solomon FEC: ACTIVE in transmit pipeline          ║")
+            Log.i("NadeSession", "║  RS(255,223) - 32 parity bytes, corrects ≤16 errors     ║")
+            Log.i("NadeSession", "╚══════════════════════════════════════════════════════════╝")
+        }
+        
         var packets = 0
+        // Buffer for Reed-Solomon encoded data
+        val rsEncodedBuffer = ByteArray(outgoingBuffer.size + 32) // +32 for RS parity
         try {
             while (running.get()) {
                 val out = outputStream
@@ -399,16 +410,28 @@ internal class NadeSession(
                 val produced = NadeCore.generateOutgoing(outgoingBuffer, outgoingBuffer.size)
                 if (produced > 0) {
                     if (fskModeEnabled) {
-                        // 4-FSK Audio Transport Mode:
-                        // Modulate the encrypted data bytes into audio tones
-                        val samplesNeeded = NadeCore.fskSamplesForBytes(produced)
+                        // 4-FSK Audio Transport Mode with optional Reed-Solomon FEC
+                        var dataToModulate = outgoingBuffer.copyOf(produced)
+                        var dataLen = produced
+                        
+                        // Apply Reed-Solomon encoding if enabled (for noisy audio channels)
+                        if (NadeCore.isRsEnabled()) {
+                            val rsEncoded = NadeCore.rsEncode(dataToModulate, rsEncodedBuffer)
+                            if (rsEncoded > 0) {
+                                dataToModulate = rsEncodedBuffer.copyOf(rsEncoded)
+                                dataLen = rsEncoded
+                                if (packets < 5 || packets % 100 == 0) {
+                                    Log.i("NadeSession", "🛡️ RS TX #$packets: $produced data + 32 parity = $rsEncoded bytes")
+                                }
+                            }
+                        }
+                        
+                        // Modulate the (possibly RS-encoded) data into audio tones
+                        val samplesNeeded = NadeCore.fskSamplesForBytes(dataLen)
                         val modulatedSamples = if (samplesNeeded <= fskModulatedBuffer.size) {
-                            NadeCore.fskModulate(
-                                outgoingBuffer.copyOf(produced),
-                                fskModulatedBuffer
-                            )
+                            NadeCore.fskModulate(dataToModulate, fskModulatedBuffer)
                         } else {
-                            Log.w("NadeSession", "FSK buffer too small for $produced bytes")
+                            Log.w("NadeSession", "FSK buffer too small for $dataLen bytes")
                             0
                         }
                         
@@ -423,7 +446,7 @@ internal class NadeSession(
                             out.write(audioBytes)
                             out.flush()
                             if (packets < 5 || packets % 50 == 0) {
-                                Log.d("NadeSession", "FSK Tx: $produced bytes -> $modulatedSamples samples")
+                                Log.d("NadeSession", "FSK Tx: $dataLen bytes -> $modulatedSamples samples")
                             }
                         }
                     } else {
@@ -438,7 +461,15 @@ internal class NadeSession(
                         Log.i("NadeSession", "Hangup frame flushed via transmit loop")
                     }
                     packets++
-                    if (packets % 100 == 0) Log.d("NadeSession", "Tx sent $packets packets")
+                    
+                    // Log RS stats periodically
+                    if (packets % 100 == 0) {
+                        Log.d("NadeSession", "Tx sent $packets packets")
+                        if (fskModeEnabled && NadeCore.isRsEnabled()) {
+                            val stats = NadeCore.getRsStats()
+                            Log.i("NadeSession", "📊 RS STATS: ${stats.encodes} encoded | ${stats.decodes} decoded | ${stats.errorsCorrected} errors fixed | ${stats.uncorrectable} uncorrectable")
+                        }
+                    }
                 } else {
                     Thread.sleep(4)
                 }
@@ -455,9 +486,22 @@ internal class NadeSession(
 
     private fun receiveLoop() {
         Log.d("NadeSession", "receiveLoop started (FSK mode: $fskModeEnabled)")
+        
+        // Log RS status on start
+        if (fskModeEnabled && NadeCore.isRsEnabled()) {
+            Log.i("NadeSession", "╔══════════════════════════════════════════════════════════╗")
+            Log.i("NadeSession", "║  Reed-Solomon FEC: ACTIVE in receive pipeline           ║")
+            Log.i("NadeSession", "║  Watching for corrupted frames to correct...            ║")
+            Log.i("NadeSession", "╚══════════════════════════════════════════════════════════╝")
+        }
+        
         var packets = 0
+        var rsErrorsCorrected = 0
         // Buffer for receiving audio samples in FSK mode
         val fskRxAudioBuffer = ShortArray(8192)
+        // Buffer for accumulating RS-encoded blocks
+        val rsBlockBuffer = ByteArray(fskDemodulatedBuffer.size)
+        var rsBlockLen = 0
         try {
             while (running.get()) {
                 val input = inputStream
@@ -485,12 +529,35 @@ internal class NadeSession(
                             // Feed audio to demodulator
                             NadeCore.fskFeedAudio(fskRxAudioBuffer, sampleCount)
                             
-                            // Pull demodulated bytes and pass to NADE
+                            // Pull demodulated bytes
                             val demodulated = NadeCore.fskPullDemodulated(fskDemodulatedBuffer)
                             if (demodulated > 0) {
-                                NadeCore.handleIncoming(fskDemodulatedBuffer, demodulated)
-                                if (packets < 5 || packets % 50 == 0) {
-                                    Log.d("NadeSession", "FSK Rx: $sampleCount samples -> $demodulated bytes")
+                                // Apply Reed-Solomon decoding if enabled
+                                if (NadeCore.isRsEnabled() && demodulated > 32) {
+                                    // RS decode in-place
+                                    val codeword = fskDemodulatedBuffer.copyOf(demodulated)
+                                    val errors = NadeCore.rsDecode(codeword)
+                                    if (errors >= 0) {
+                                        // Successfully decoded - extract data portion
+                                        val dataLen = NadeCore.rsDataLen(demodulated)
+                                        NadeCore.handleIncoming(codeword, dataLen)
+                                        if (errors > 0) {
+                                            rsErrorsCorrected += errors
+                                            Log.i("NadeSession", "🔧 RS RX #$packets: CORRECTED $errors byte errors! (session total: $rsErrorsCorrected)")
+                                        } else if (packets < 5 || packets % 100 == 0) {
+                                            Log.d("NadeSession", "✓ RS RX #$packets: Clean frame, $dataLen bytes")
+                                        }
+                                    } else {
+                                        // Uncorrectable - still try to pass through
+                                        Log.w("NadeSession", "❌ RS RX #$packets: UNCORRECTABLE (>16 byte errors)")
+                                        NadeCore.handleIncoming(fskDemodulatedBuffer, demodulated)
+                                    }
+                                } else {
+                                    // No RS encoding, pass directly
+                                    NadeCore.handleIncoming(fskDemodulatedBuffer, demodulated)
+                                    if (packets < 5 || packets % 50 == 0) {
+                                        Log.d("NadeSession", "FSK Rx: $sampleCount samples -> $demodulated bytes (no RS)")
+                                    }
                                 }
                             }
                         }
