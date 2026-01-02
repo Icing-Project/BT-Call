@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:btcalls/src/repositories/share_profile_repository.dart';
 import 'package:btcalls/src/services/asymmetric_crypto_service.dart';
 
 class ManageKeysPage extends StatefulWidget {
@@ -10,6 +11,7 @@ class ManageKeysPage extends StatefulWidget {
 
 class _ManageKeysPageState extends State<ManageKeysPage> {
   final AsymmetricCryptoService _cryptoService = AsymmetricCryptoService();
+  final ShareProfileRepository _shareProfileRepository = ShareProfileRepository();
   List<Map<String, dynamic>> _keys = [];
   bool _isLoading = false;
 
@@ -63,6 +65,10 @@ class _ManageKeysPageState extends State<ManageKeysPage> {
     });
     try {
       await _cryptoService.deleteKeyPair(alias);
+      final savedAlias = await _shareProfileRepository.loadKeyAlias();
+      if (savedAlias == alias) {
+        await _shareProfileRepository.saveKeyAlias('');
+      }
       await _loadKeys();
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Key deleted successfully')));
@@ -78,7 +84,7 @@ class _ManageKeysPageState extends State<ManageKeysPage> {
 
   Future<void> _viewPublicKey(String alias) async {
     try {
-      final publicKey = await _cryptoService.getPublicKey(alias);
+      final publicKey = await _cryptoService.deriveNadePublicKey(alias);
       showDialog(
         context: context,
         builder: (_) => AlertDialog(

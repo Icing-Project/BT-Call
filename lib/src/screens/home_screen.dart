@@ -18,8 +18,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-
-
+  BluetoothProvider? _connectionProvider;
   // Manual connect controller
   final TextEditingController _manualController = TextEditingController();
   bool _isMacValid = false;
@@ -35,9 +34,23 @@ class _HomeScreenState extends State<HomeScreen> {
     
     // Listen for connection changes to navigate to call screen
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final btProvider = context.read<BluetoothProvider>();
-      btProvider.addListener(_onConnectionChanged);
+      _maybeAttachConnectionListener();
     });
+  }
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _maybeAttachConnectionListener();
+  }
+
+  void _maybeAttachConnectionListener() {
+    if (!mounted) return;
+    final provider = context.read<BluetoothProvider>();
+    if (_connectionProvider == provider) return;
+    _connectionProvider?.removeListener(_onConnectionChanged);
+    _connectionProvider = provider;
+    _connectionProvider?.addListener(_onConnectionChanged);
   }
   
   void _onConnectionChanged() {
@@ -108,8 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _manualController.dispose();
     // Remove listener to prevent memory leaks
-    final btProvider = context.read<BluetoothProvider>();
-    btProvider.removeListener(_onConnectionChanged);
+    _connectionProvider?.removeListener(_onConnectionChanged);
     super.dispose();
   }
   
@@ -181,7 +193,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final btProvider = context.watch<BluetoothProvider>();
-    final contactsProvider = context.watch<ContactsProvider>();
     final themeProvider = context.watch<ThemeProvider>();
     _scheduleMessageFlush(btProvider);
 
@@ -340,15 +351,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 itemCount: btProvider.devices.length,
                 itemBuilder: (context, index) {
                   final Device device = btProvider.devices[index];
-                  final matches = device.discoveryHint.isNotEmpty
-                      ? contactsProvider.contactsForDiscoveryHint(device.discoveryHint)
-                      : const [];
-                  final aliasSummary = matches.isEmpty
-                      ? null
-                      : matches.map((contact) => contact.name).join(', ');
-                  final keyPreview = matches.isEmpty
-                      ? null
-                      : _shortenKey(matches.first.publicKey);
                   return AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeInOut,
@@ -395,12 +397,5 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-
-  String _shortenKey(String key) {
-    if (key.isEmpty) return 'Unknown';
-    if (key.length <= 12) return key;
-    return '${key.substring(0, 12)}…';
-  }
-
 
 }

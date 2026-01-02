@@ -77,10 +77,16 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     val hint = call.argument<String>("discoveryHint") ?: ""
+                    val profileMap = call.argument<Map<String, Any?>>("profile")
+                    val localProfile = TransportProfile.fromMap(profileMap)
+                    if (localProfile == null) {
+                        result.error("INVALID_PROFILE", "Local profile missing required fields", null)
+                        return@setMethodCallHandler
+                    }
                     val baseName = sanitizeAdapterName(btAdapter?.name)
                     originalAdapterName = baseName
                     try {
-                        btAdapter?.name = composeBroadcastName(baseName, hint)
+                        btAdapter?.name = composeBroadcastName(baseName, if (hint.isNotEmpty()) hint else localProfile.discoveryHint)
                     } catch (_: SecurityException) {
                         // ignore if we cannot rename due to permission changes
                     }
@@ -91,7 +97,7 @@ class MainActivity : FlutterActivity() {
                     startActivity(discoverIntent)
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
                     val encrypt = call.argument<Boolean>("encrypt") ?: true
-                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt) { method, arg ->
+                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt, localProfile) { method, arg ->
                         runOnUiThread {
                             methodChannel.invokeMethod(method, arg)
                         }
@@ -115,7 +121,13 @@ class MainActivity : FlutterActivity() {
                     val mac = call.argument<String>("macAddress")!!
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
                     val encrypt = call.argument<Boolean>("encrypt") ?: true
-                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt) { method, arg ->
+                    val profileMap = call.argument<Map<String, Any?>>("profile")
+                    val localProfile = TransportProfile.fromMap(profileMap)
+                    if (localProfile == null) {
+                        result.error("INVALID_PROFILE", "Local profile missing required fields", null)
+                        return@setMethodCallHandler
+                    }
+                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt, localProfile) { method, arg ->
                         runOnUiThread {
                             methodChannel.invokeMethod(method, arg)
                         }
@@ -292,11 +304,17 @@ class MainActivity : FlutterActivity() {
                 "startServer" -> {
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
                     val encrypt = call.argument<Boolean>("encrypt") ?: true
+                    val profileMap = call.argument<Map<String, Any?>>("profile")
+                    val localProfile = TransportProfile.fromMap(profileMap)
+                    if (localProfile == null) {
+                        result.error("INVALID_PROFILE", "Local profile missing required fields", null)
+                        return
+                    }
                     val hint = call.argument<String>("discoveryHint") ?: ""
                     val baseName = sanitizeAdapterName(btAdapter?.name)
                     originalAdapterName = baseName
                     try {
-                        btAdapter?.name = composeBroadcastName(baseName, hint)
+                        btAdapter?.name = composeBroadcastName(baseName, if (hint.isNotEmpty()) hint else localProfile.discoveryHint)
                     } catch (_: SecurityException) {
                         // ignore
                     }
@@ -304,7 +322,7 @@ class MainActivity : FlutterActivity() {
                         putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
                     }
                     startActivity(discoverIntent)
-                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt) { method, arg ->
+                    server = BluetoothAudioServer(this@MainActivity, decrypt, encrypt, localProfile) { method, arg ->
                         runOnUiThread { methodChannel.invokeMethod(method, arg) }
                     }
                     server?.startServer()
@@ -314,7 +332,13 @@ class MainActivity : FlutterActivity() {
                     val mac = call.argument<String>("macAddress")!!
                     val decrypt = call.argument<Boolean>("decrypt") ?: true
                     val encrypt = call.argument<Boolean>("encrypt") ?: true
-                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt) { method, arg ->
+                    val profileMap = call.argument<Map<String, Any?>>("profile")
+                    val localProfile = TransportProfile.fromMap(profileMap)
+                    if (localProfile == null) {
+                        result.error("INVALID_PROFILE", "Local profile missing required fields", null)
+                        return
+                    }
+                    client = BluetoothAudioClient(this@MainActivity, decrypt, encrypt, localProfile) { method, arg ->
                         runOnUiThread { methodChannel.invokeMethod(method, arg) }
                     }
                     client?.startClient(mac)

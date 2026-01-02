@@ -98,6 +98,8 @@ class _ContactsScreenState extends State<ContactsScreen>
       }
       if (_nameController.text.trim().isEmpty) {
         _nameController.text = deviceName;
+        // Also save the prefilled name so it's used in calls
+        await _sharePrefs.saveDisplayName(deviceName);
       }
     } catch (e) {
       debugPrint('Failed to fetch local device name: $e');
@@ -133,6 +135,16 @@ class _ContactsScreenState extends State<ContactsScreen>
     }
   }
 
+  bool _isValidNadeKey(String key) {
+    if (key.trim().isEmpty) return false;
+    try {
+      final decoded = base64Decode(key.trim());
+      return decoded.length == 32;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> _selectAlias(String? alias) async {
     if (alias == null) {
       setState(() {
@@ -142,12 +154,15 @@ class _ContactsScreenState extends State<ContactsScreen>
       return;
     }
     try {
-      final key = await _crypto.getPublicKey(alias);
+      final key = await _crypto.deriveNadePublicKey(alias);
+      if (!_isValidNadeKey(key)) {
+        throw Exception('Derived call key is invalid. Try regenerating the key pair.');
+      }
       if (!mounted) return;
       await _sharePrefs.saveKeyAlias(alias);
       setState(() {
         _selectedAlias = alias;
-        _publicKey = key;
+        _publicKey = key.trim();
       });
     } catch (e) {
       if (!mounted) return;
@@ -527,16 +542,16 @@ class _ContactsScreenState extends State<ContactsScreen>
       if (legacyMac.isNotEmpty || (macsRaw is List && macsRaw.isNotEmpty)) {
         debugPrint('Ignoring legacy MAC values in contact payload.');
       }
-      final publicKey = decoded['publicKey'] as String? ?? '';
-  final discoveryHint = (decoded['discoveryHint'] as String? ?? '').toUpperCase();
-      if (publicKey.isEmpty) {
-        throw const FormatException('Contact payload missing public key.');
+      final publicKey = (decoded['publicKey'] as String? ?? '').trim();
+      final discoveryHint = (decoded['discoveryHint'] as String? ?? '').toUpperCase();
+      if (!_isValidNadeKey(publicKey)) {
+        throw const FormatException('Contact payload missing a valid call key.');
       }
       contact = Contact(
         name: name,
         publicKey: publicKey,
         createdAt: DateTime.now(),
-  discoveryHint: discoveryHint,
+        discoveryHint: discoveryHint,
       );
     } catch (e) {
       if (!mounted) return;
