@@ -43,6 +43,7 @@ internal class NadeSession(
 
     private val running = AtomicBoolean(false)
     private val transportReady = AtomicBoolean(false)
+    private val coreSessionStarted = AtomicBoolean(false)  // True after NadeCore.startServer/startClient succeeds
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -107,6 +108,7 @@ internal class NadeSession(
         val peerKeyBytes = decodeKey(peerKeyBase64)
         val ok = NadeCore.startServer(peerKeyBytes)
         if (ok) {
+            coreSessionStarted.set(true)  // Mark core as ready before starting threads
             emitState("server_started")
             ensureThreads()
         }
@@ -117,6 +119,7 @@ internal class NadeSession(
         val peerKeyBytes = decodeKey(peerKeyBase64)
         val ok = NadeCore.startClient(peerKeyBytes)
         if (ok) {
+            coreSessionStarted.set(true)  // Mark core as ready before starting threads
             emitState("client_started")
             ensureThreads()
         }
@@ -182,21 +185,25 @@ internal class NadeSession(
     }
 
     fun updateConfiguration(values: Map<String, Any?>) {
-        for ((key, value) in values) {
-            when (value) {
-                is Boolean -> configState.put(key, value)
-                is Number -> configState.put(key, value)
-                is String -> configState.put(key, value)
+        synchronized(configState) {
+            for ((key, value) in values) {
+                when (value) {
+                    is Boolean -> configState.put(key, value)
+                    is Number -> configState.put(key, value)
+                    is String -> configState.put(key, value)
+                }
+                if (key == "speaker" && value is Boolean) {
+                    setSpeakerEnabled(value)
+                }
+                // Toggle 4-FSK audio transport mode
+                if (key == "fsk_mode" && value is Boolean) {
+                    setFskModeEnabled(value)
+                }
             }
-            if (key == "speaker" && value is Boolean) {
-                setSpeakerEnabled(value)
-            }
-            // Toggle 4-FSK audio transport mode
-            if (key == "fsk_mode" && value is Boolean) {
-                setFskModeEnabled(value)
-            }
+            val json = configState.toString()
+            Log.d("NadeSession", "updateConfiguration: $json")
+            NadeCore.setConfig(json)
         }
-        NadeCore.setConfig(configState.toString())
     }
 
     /**
@@ -227,6 +234,7 @@ internal class NadeSession(
         }
         running.set(false)
         transportReady.set(false)
+        coreSessionStarted.set(false)  // Reset core session flag
         detachTransport()
         try {
             audioManager.stopBluetoothSco()
@@ -506,6 +514,12 @@ internal class NadeSession(
             while (running.get()) {
                 val input = inputStream
                 if (!transportReady.get() || input == null) {
+                    Thread.sleep(10)
+                    continue
+                }
+                // Wait for NADE core session to be started before processing incoming data
+                // This prevents processing frames encrypted with keys from a different session
+                if (!coreSessionStarted.get()) {
                     Thread.sleep(10)
                     continue
                 }

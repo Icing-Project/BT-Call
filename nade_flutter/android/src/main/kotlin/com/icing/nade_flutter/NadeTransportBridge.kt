@@ -71,4 +71,10 @@ object NadeTransportBridge {
     fun updateSpeaker(enabled: Boolean) {
         sessionRef.get()?.setSpeakerEnabled(enabled)
     }
+
+    @JvmStatic
+    fun setConfig(key: String, value: Any) {
+        android.util.Log.d("NadeTransportBridge", "setConfig called with key=$key, value=$value")
+        sessionRef.get()?.updateConfiguration(mapOf(key to value))
+    }
 }

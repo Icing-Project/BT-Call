@@ -9,6 +9,7 @@ import '../models/device.dart';
 import 'call_screen.dart';
 import 'contacts_screen.dart';
 import 'key_management.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -222,6 +223,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     builder: (_) => const ContactsScreen(),
                   ),
                 );
+              } else if (value == 'settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const SettingsScreen(),
+                  ),
+                );
               }
             },
             itemBuilder: (context) => [
@@ -232,6 +240,10 @@ class _HomeScreenState extends State<HomeScreen> {
               const PopupMenuItem<String>(
                 value: 'contacts',
                 child: Text('Contacts & sharing'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'settings',
+                child: Text('Settings'),
               ),
             ],
           ),

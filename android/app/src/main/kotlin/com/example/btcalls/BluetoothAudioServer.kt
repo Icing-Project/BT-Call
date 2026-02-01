@@ -23,6 +23,10 @@ class BluetoothAudioServer(
 
     fun startServer() {
         thread {
+            // Apply initial configuration (resolves unused params issue)
+            NadeTransportBridge.setConfig("decrypt", decryptEnabled)
+            NadeTransportBridge.setConfig("encrypt", encryptEnabled)
+
             try {
                 val adapter = BluetoothAdapter.getDefaultAdapter()
                 serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID)
@@ -74,12 +78,14 @@ class BluetoothAudioServer(
     
     // Toggle decryption at runtime
     fun toggleDecryption(enabled: Boolean) {
-        // handled by NADE configure on Flutter side
+        android.util.Log.d("BluetoothAudioServer", "toggleDecryption called: $enabled")
+        NadeTransportBridge.setConfig("decrypt", enabled)
     }
     
     // Toggle encryption at runtime
     fun toggleEncryption(enabled: Boolean) {
-        // handled by NADE configure on Flutter side
+        android.util.Log.d("BluetoothAudioServer", "toggleEncryption called: $enabled")
+        NadeTransportBridge.setConfig("encrypt", enabled)
     }
     // Toggle speakerphone at runtime
     fun toggleSpeaker(enabled: Boolean) {

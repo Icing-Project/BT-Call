@@ -1200,8 +1200,11 @@ static bool derive_keys_locked(void) {
         memcpy(g_session.rx_nonce_base, client_nonce, 12);
     }
     
-    // Log the derived keys for debugging (only first few bytes)
+    // Log the derived keys and ephemeral key fingerprints for debugging
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "Keys derived. Role: %d", g_session.role);
+    __android_log_print(ANDROID_LOG_DEBUG, TAG, "My EPH: %02x%02x%02x%02x... Peer EPH: %02x%02x%02x%02x...",
+                        g_session.eph_pub[0], g_session.eph_pub[1], g_session.eph_pub[2], g_session.eph_pub[3],
+                        g_session.peer_eph_pub[0], g_session.peer_eph_pub[1], g_session.peer_eph_pub[2], g_session.peer_eph_pub[3]);
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "TX Key: %02x%02x%02x...", g_session.tx_key[0], g_session.tx_key[1], g_session.tx_key[2]);
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "RX Key: %02x%02x%02x...", g_session.rx_key[0], g_session.rx_key[1], g_session.rx_key[2]);
 
@@ -1297,7 +1300,8 @@ static void queue_audio_frames_locked(void) {
         plain[7] = (uint8_t)(adpcm_len >> 8);
         memcpy(plain + 8, adpcm_buf, adpcm_len);
         size_t plain_len = adpcm_len + 8;
-        if (g_session.outbound_encrypted && g_session.tx_aead_ready) {
+        // Use g_config.encrypt directly to allow mid-call toggling
+        if (g_config.encrypt && g_session.tx_aead_ready) {
             uint8_t cipher[MAX_FRAME_BODY + 16];
             uint8_t nonce[12];
             compose_nonce(nonce, g_session.tx_nonce_base, g_session.tx_counter++);
@@ -1308,6 +1312,12 @@ static void queue_audio_frames_locked(void) {
             crypto_wipe(&ctx, sizeof(ctx));
             queue_frame(FRAME_KIND_CIPHER, cipher, (uint16_t)(plain_len + 16));
         } else {
+            // Log when sending plaintext (only occasionally to avoid spam)
+            static uint64_t plaintext_log_count = 0;
+            if (plaintext_log_count++ % 100 == 0) {
+                __android_log_print(ANDROID_LOG_INFO, TAG, "Sending PLAINTEXT frame (encrypt=%d, tx_ready=%d)", 
+                                   g_config.encrypt, g_session.tx_aead_ready);
+            }
             queue_frame(FRAME_KIND_PLAINTEXT, plain, (uint16_t)plain_len);
         }
     }
@@ -1373,29 +1383,17 @@ static void handle_encrypted_payload_locked(const uint8_t *data, size_t len, boo
     }
     uint8_t plain[MAX_FRAME_BODY];
     size_t plain_len = len;
-    if (encrypted && len > 16 && g_session.rx_aead_ready) {
+    
+    // Check if we should decrypt: frame is encrypted AND we have keys AND decrypt is enabled
+    if (encrypted && len > 16 && g_session.rx_aead_ready && g_config.decrypt) {
         size_t cipher_len = len - 16;
         uint8_t nonce[12];
         compose_nonce(nonce, g_session.rx_nonce_base, g_session.rx_counter++);
         crypto_aead_ctx ctx;
         crypto_aead_init_ietf(&ctx, g_session.rx_key, nonce);
-        // The tag is at the END of the message in ChaCha20-Poly1305
-        // data = [ciphertext (len-16)] [tag (16)]
-        // crypto_aead_read expects:
-        // - message: output buffer for plaintext
-        // - mac: pointer to the tag (last 16 bytes of input)
-        // - ad: associated data (NULL here)
-        // - ad_size: 0
-        // - nonce: the nonce
-        // - key: the key
-        // - ciphertext: pointer to ciphertext (start of input)
-        // - ciphertext_size: length of ciphertext (len - 16)
         if (crypto_aead_read(&ctx, plain, data + cipher_len,
                               NULL, 0, data, cipher_len) != 0) {
             crypto_wipe(&ctx, sizeof(ctx));
-            // If decryption fails, we MUST NOT increment the counter, or we will be out of sync forever.
-            // Actually, for security we SHOULD increment, but if we are debugging a sync issue,
-            // let's log the nonce to see what's happening.
             __android_log_print(ANDROID_LOG_WARN, TAG, "Failed to decrypt frame. Nonce counter: %llu", (unsigned long long)(g_session.rx_counter - 1));
             return;
         }
@@ -1407,7 +1405,21 @@ static void handle_encrypted_payload_locked(const uint8_t *data, size_t len, boo
                                 "Handshake acknowledged via decrypted frame (role=%d)",
                                 g_session.role);
         }
+    } else if (encrypted && len > 16 && g_session.rx_aead_ready && !g_config.decrypt) {
+        // Decrypt is disabled mid-call: still increment counter to stay in sync, but skip audio
+        g_session.rx_counter++;
+        __android_log_print(ANDROID_LOG_DEBUG, TAG, "Skipping encrypted frame (decrypt disabled)");
+        return;
+    } else if (!encrypted && g_config.decrypt && g_session.rx_aead_ready) {
+        // Security: Received plaintext but we expect encrypted audio - reject it
+        // This prevents downgrade attacks where peer sends unencrypted data unexpectedly
+        static uint64_t reject_log_count = 0;
+        if (reject_log_count++ % 100 == 0) {
+            __android_log_print(ANDROID_LOG_WARN, TAG, "Rejecting plaintext frame (decrypt enabled, expecting encrypted)");
+        }
+        return;
     } else {
+        // Plaintext frame when decrypt is disabled, or during handshake setup
         memcpy(plain, data, min_size(len, sizeof(plain)));
         plain_len = min_size(len, sizeof(plain));
     }
@@ -1433,6 +1445,24 @@ static void handle_handshake_payload_locked(const uint8_t *payload, size_t len) 
     __android_log_print(ANDROID_LOG_DEBUG, TAG,
                         "Handshake payload received (role=%d, cap=%u)",
                         g_session.role, capabilities);
+    
+    // Check for duplicate handshake (retransmission) to avoid resetting session/counters
+    if (g_session.have_peer_ephemeral && g_session.handshake_complete && 
+        memcmp(g_session.peer_eph_pub, payload + 4, 32) == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, TAG, "Ignoring duplicate handshake (already complete)");
+        return;
+    }
+    
+    // If we already completed a handshake but receive a NEW ephemeral key, this is a reconnection
+    // In this case, we need to re-derive keys and CLEAR any stale frames in the buffer
+    if (g_session.handshake_complete && g_session.have_peer_ephemeral &&
+        memcmp(g_session.peer_eph_pub, payload + 4, 32) != 0) {
+        __android_log_print(ANDROID_LOG_WARN, TAG, "Received NEW handshake with different ephemeral key - session re-keying");
+        // Note: Incoming buffer may contain frames encrypted with old keys - they will fail decryption
+        // This is expected during re-keying but we log it separately
+        g_session.handshake_acknowledged = false;
+    }
+
     memcpy(g_session.peer_eph_pub, payload + 4, 32);
     memcpy(g_session.peer_static, payload + 36, 32);
     g_session.have_peer_ephemeral = true;
@@ -1523,6 +1553,14 @@ static int start_session_common(const uint8_t *peer_pubkey, size_t len, nade_rol
         return -1;
     }
     session_reset_locked();
+    
+    // Clear any stale data from previous connection attempts
+    // This prevents processing frames encrypted with old keys
+    outgoing_clear();
+    incoming_clear();
+    clear_int16_ring(&g_mic_head, &g_mic_size, &g_mic_mutex);
+    clear_int16_ring(&g_spk_head, &g_spk_size, &g_spk_mutex);
+    
     g_session.active = true;
     g_session.role = role;
     if (peer_pubkey && len == 32 && !is_all_zero(peer_pubkey, 32)) {
@@ -1537,6 +1575,10 @@ static int start_session_common(const uint8_t *peer_pubkey, size_t len, nade_rol
     g_session.last_keepalive_ms = now_monotonic_ms();
     g_session.outbound_encrypted = g_config.encrypt;
     g_session.inbound_encrypted = g_config.decrypt;
+    
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Session started (role=%d, eph=%02x%02x%02x%02x...)",
+                        role, g_session.eph_pub[0], g_session.eph_pub[1], g_session.eph_pub[2], g_session.eph_pub[3]);
+    
     pthread_mutex_unlock(&g_session_mutex);
     return 0;
 }
@@ -1630,9 +1672,13 @@ int nade_consume_remote_hangup(void) {
     return requested ? 1 : 0;
 }
 
-static bool parse_bool_flag(const char *json, const char *key, bool fallback) {
-    const char *found = strstr(json, key);
+static bool parse_bool_flag(const char *json, const char *key_name, bool fallback) {
+    char key_search[64];
+    snprintf(key_search, sizeof(key_search), "\"%s\"", key_name);
+    
+    const char *found = strstr(json, key_search);
     if (!found) {
+         __android_log_print(ANDROID_LOG_DEBUG, TAG, "Config parse: Key '%s' not found", key_name);
         return fallback;
     }
     const char *colon = strchr(found, ':');
@@ -1645,8 +1691,10 @@ static bool parse_bool_flag(const char *json, const char *key, bool fallback) {
     }
     if (strncmp(ptr, "true", 4) == 0) return true;
     if (strncmp(ptr, "false", 5) == 0) return false;
+    __android_log_print(ANDROID_LOG_WARN, TAG, "Config parse: Key '%s' found but value not boolean", key_name);
     return fallback;
 }
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_icing_nade_1flutter_NadeCore_nativeDerivePublicKey(JNIEnv *env, jobject thiz, jbyteArray seed_array) {
     if (!seed_array) {
@@ -1682,13 +1730,14 @@ int nade_set_config(const char *json) {
         return -1;
     }
     pthread_mutex_lock(&g_session_mutex);
-    g_config.encrypt = parse_bool_flag(json, "\"encrypt\"", g_config.encrypt);
-    g_config.decrypt = parse_bool_flag(json, "\"decrypt\"", g_config.decrypt);
-    g_fsk_enabled = parse_bool_flag(json, "\"fsk_enabled\"", g_fsk_enabled);
+    g_config.encrypt = parse_bool_flag(json, "encrypt", g_config.encrypt);
+    g_config.decrypt = parse_bool_flag(json, "decrypt", g_config.decrypt);
+    g_fsk_enabled = parse_bool_flag(json, "fsk_enabled", g_fsk_enabled); // Note: "fsk_enabled" maps to g_fsk_enabled
     g_session.outbound_encrypted = g_config.encrypt && g_session.peer_accepts_encrypt;
     g_session.inbound_encrypted = g_config.decrypt && g_session.peer_sends_encrypt;
     pthread_mutex_unlock(&g_session_mutex);
-    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Config updated: fsk_enabled=%d", g_fsk_enabled);
+    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Config updated: fsk=%d, encrypt=%d, decrypt=%d", 
+                        g_fsk_enabled, g_config.encrypt, g_config.decrypt);
     return 0;
 }
 

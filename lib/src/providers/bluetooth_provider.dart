@@ -52,6 +52,10 @@ class BluetoothProvider extends ChangeNotifier {
   final Map<String, String> _hintByAddress = {};
   String _sessionPeerPublicKey = '';
   
+  // Verbose mode logs - displayed on call screen when verbose mode is enabled
+  final List<String> _verboseLogs = [];
+  static const int _maxVerboseLogs = 50;  // Keep last 50 entries
+  
   // Connected device info
   Device? _connectedDevice;
 
@@ -96,6 +100,25 @@ class BluetoothProvider extends ChangeNotifier {
 
   void _pushMessage(String message, {UXMessageType type = UXMessageType.info}) {
     _messageQueue.add(UXMessage(message, type: type));
+  }
+
+  /// Verbose logs for the call screen (when verbose mode is enabled)
+  List<String> get verboseLogs => List.unmodifiable(_verboseLogs);
+  
+  /// Add a verbose log entry (shown on call screen if verbose mode is on)
+  void _pushVerboseLog(String message) {
+    final timestamp = DateTime.now().toIso8601String().substring(11, 19); // HH:mm:ss
+    _verboseLogs.add('[$timestamp] $message');
+    if (_verboseLogs.length > _maxVerboseLogs) {
+      _verboseLogs.removeAt(0);
+    }
+    notifyListeners();
+  }
+  
+  /// Clear verbose logs (called when starting a new call)
+  void clearVerboseLogs() {
+    _verboseLogs.clear();
+    notifyListeners();
   }
 
   Future<dynamic> _handleNativeCall(MethodCall call) async {
@@ -575,17 +598,28 @@ class BluetoothProvider extends ChangeNotifier {
 
   Future<void> _startNadeForConnectedDevice(Device device) async {
     print('BluetoothProvider: _startNadeForConnectedDevice called for ${device.name}'); // DEBUG LOG
+    clearVerboseLogs(); // Start fresh for new call
+    _pushVerboseLog('Starting secure call with ${device.name}');
+    
     if (_callRole == _CallRole.none) {
       print('BluetoothProvider: Call role is NONE, aborting NADE start'); // DEBUG LOG
+      _pushVerboseLog('⚠️ Error: Call role not set');
       return;
     }
+    
+    final roleStr = _callRole == _CallRole.server ? 'SERVER' : 'CLIENT';
+    _pushVerboseLog('📱 Role: $roleStr');
+    
     try {
       await _ensureNadeInitialized();
+      _pushVerboseLog('✓ NADE core initialized');
+      
       final peerKey = _extractPeerKey(device);
       print('BluetoothProvider: Extracted peer key: ${peerKey.isNotEmpty ? "FOUND" : "EMPTY"}'); // DEBUG LOG
       
       if (!_isValidNadeKey(peerKey)) {
         print('BluetoothProvider: Invalid peer key, stopping session'); // DEBUG LOG
+        _pushVerboseLog('❌ Peer key missing or invalid');
         _status = 'missing peer key';
         _pushMessage(
           'Secure profile exchange failed. Ensure both devices shared codes before calling.',
@@ -596,8 +630,13 @@ class BluetoothProvider extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      _pushVerboseLog('✓ Peer key validated');
+      
       await Nade.setFskMode(false); // Enable 4-FSK audio transport mode
       await _applyNadeConfig();
+      _pushVerboseLog('✓ Encryption config applied (enc=${_encryptEnabled}, dec=${_decryptEnabled})');
+      _pushVerboseLog('🔐 Starting handshake as $roleStr...');
+      
       bool started;
       if (_callRole == _CallRole.server) {
         print('BluetoothProvider: Starting NADE as SERVER'); // DEBUG LOG
@@ -612,11 +651,15 @@ class BluetoothProvider extends ChangeNotifier {
       print('BluetoothProvider: NADE start result: $started'); // DEBUG LOG
       if (started) {
         _nadeSessionActive = true;
+        _pushVerboseLog('✓ NADE session started successfully');
+        _pushVerboseLog('🔊 Audio streaming active');
       } else {
+        _pushVerboseLog('❌ NADE session failed to start');
         _pushMessage('Unable to start secure audio session.', type: UXMessageType.error);
       }
     } catch (e) {
       print('BluetoothProvider: Audio initialization failed: $e'); // DEBUG LOG
+      _pushVerboseLog('❌ Error: $e');
       _pushMessage('Audio initialization failed: $e', type: UXMessageType.error);
     }
   }
