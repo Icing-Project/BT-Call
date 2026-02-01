@@ -1200,8 +1200,11 @@ static bool derive_keys_locked(void) {
         memcpy(g_session.rx_nonce_base, client_nonce, 12);
     }
     
-    // Log the derived keys for debugging (only first few bytes)
+    // Log the derived keys and ephemeral key fingerprints for debugging
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "Keys derived. Role: %d", g_session.role);
+    __android_log_print(ANDROID_LOG_DEBUG, TAG, "My EPH: %02x%02x%02x%02x... Peer EPH: %02x%02x%02x%02x...",
+                        g_session.eph_pub[0], g_session.eph_pub[1], g_session.eph_pub[2], g_session.eph_pub[3],
+                        g_session.peer_eph_pub[0], g_session.peer_eph_pub[1], g_session.peer_eph_pub[2], g_session.peer_eph_pub[3]);
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "TX Key: %02x%02x%02x...", g_session.tx_key[0], g_session.tx_key[1], g_session.tx_key[2]);
     __android_log_print(ANDROID_LOG_DEBUG, TAG, "RX Key: %02x%02x%02x...", g_session.rx_key[0], g_session.rx_key[1], g_session.rx_key[2]);
 
@@ -1449,6 +1452,16 @@ static void handle_handshake_payload_locked(const uint8_t *payload, size_t len) 
         __android_log_print(ANDROID_LOG_DEBUG, TAG, "Ignoring duplicate handshake (already complete)");
         return;
     }
+    
+    // If we already completed a handshake but receive a NEW ephemeral key, this is a reconnection
+    // In this case, we need to re-derive keys and CLEAR any stale frames in the buffer
+    if (g_session.handshake_complete && g_session.have_peer_ephemeral &&
+        memcmp(g_session.peer_eph_pub, payload + 4, 32) != 0) {
+        __android_log_print(ANDROID_LOG_WARN, TAG, "Received NEW handshake with different ephemeral key - session re-keying");
+        // Note: Incoming buffer may contain frames encrypted with old keys - they will fail decryption
+        // This is expected during re-keying but we log it separately
+        g_session.handshake_acknowledged = false;
+    }
 
     memcpy(g_session.peer_eph_pub, payload + 4, 32);
     memcpy(g_session.peer_static, payload + 36, 32);
@@ -1540,6 +1553,14 @@ static int start_session_common(const uint8_t *peer_pubkey, size_t len, nade_rol
         return -1;
     }
     session_reset_locked();
+    
+    // Clear any stale data from previous connection attempts
+    // This prevents processing frames encrypted with old keys
+    outgoing_clear();
+    incoming_clear();
+    clear_int16_ring(&g_mic_head, &g_mic_size, &g_mic_mutex);
+    clear_int16_ring(&g_spk_head, &g_spk_size, &g_spk_mutex);
+    
     g_session.active = true;
     g_session.role = role;
     if (peer_pubkey && len == 32 && !is_all_zero(peer_pubkey, 32)) {
@@ -1554,6 +1575,10 @@ static int start_session_common(const uint8_t *peer_pubkey, size_t len, nade_rol
     g_session.last_keepalive_ms = now_monotonic_ms();
     g_session.outbound_encrypted = g_config.encrypt;
     g_session.inbound_encrypted = g_config.decrypt;
+    
+    __android_log_print(ANDROID_LOG_INFO, TAG, "Session started (role=%d, eph=%02x%02x%02x%02x...)",
+                        role, g_session.eph_pub[0], g_session.eph_pub[1], g_session.eph_pub[2], g_session.eph_pub[3]);
+    
     pthread_mutex_unlock(&g_session_mutex);
     return 0;
 }
