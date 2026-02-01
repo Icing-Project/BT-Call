@@ -39,6 +39,7 @@
 #define OUT_CAPACITY 262144
 #define IN_CAPACITY 262144
 #define AUDIO_FRAME_SAMPLES 320
+#define MAX_LATENCY_SAMPLES 6400 // ~400ms at 16kHz
 
 // -------------------------------------------------------------------------
 // 4-FSK Modulation Configuration
@@ -1355,6 +1356,37 @@ static void handle_audio_plain_locked(const uint8_t *data, size_t len) {
                                         min_size(sample_count, (uint16_t)AUDIO_FRAME_SAMPLES),
                                         &g_session.dec_state);
     if (decoded > 0) {
+        // Latency Control: Check if we are accumulating too much audio
+        size_t current_buffered = available_int16(&g_spk_size, &g_spk_mutex);
+        if (current_buffered + decoded > MAX_LATENCY_SAMPLES) {
+            // We are behind! Drop the OLDEST samples to catch up.
+            // Calculate how much we need to drop to fit the new samples + keep buffer under limit
+            // Actually, simplified approach: If we are over the limit, drop enough to get back to target.
+            // Target: MAX_LATENCY_SAMPLES - decoded (so we have room for new samples)
+            
+            size_t target_size = MAX_LATENCY_SAMPLES > decoded ? MAX_LATENCY_SAMPLES - decoded : 0;
+            if (current_buffered > target_size) {
+                size_t to_drop = current_buffered - target_size;
+                int16_t dummy[AUDIO_FRAME_SAMPLES];
+                size_t dropped_total = 0;
+                while (dropped_total < to_drop) {
+                    size_t chunk = min_size(to_drop - dropped_total, AUDIO_FRAME_SAMPLES);
+                    pop_int16_ring(g_spk_ring, SPK_CAPACITY, &g_spk_head, &g_spk_size, 
+                                   dummy, chunk, &g_spk_mutex);
+                    dropped_total += chunk;
+                }
+                
+                // Rate limit this log to avoid spamming
+                static uint64_t drop_log_last = 0;
+                uint64_t now = now_monotonic_ms();
+                if (now - drop_log_last > 2000) {
+                    __android_log_print(ANDROID_LOG_WARN, TAG, "Latency catch-up: Dropped %zu samples (~%d ms) to reduce delay", 
+                                       dropped_total, (int)(dropped_total / 16));
+                    drop_log_last = now;
+                }
+            }
+        }
+        
         push_int16_ring(g_spk_ring, SPK_CAPACITY, &g_spk_head, &g_spk_size,
                         pcm_buffer, decoded, &g_spk_mutex);
     }
