@@ -182,21 +182,25 @@ internal class NadeSession(
     }
 
     fun updateConfiguration(values: Map<String, Any?>) {
-        for ((key, value) in values) {
-            when (value) {
-                is Boolean -> configState.put(key, value)
-                is Number -> configState.put(key, value)
-                is String -> configState.put(key, value)
+        synchronized(configState) {
+            for ((key, value) in values) {
+                when (value) {
+                    is Boolean -> configState.put(key, value)
+                    is Number -> configState.put(key, value)
+                    is String -> configState.put(key, value)
+                }
+                if (key == "speaker" && value is Boolean) {
+                    setSpeakerEnabled(value)
+                }
+                // Toggle 4-FSK audio transport mode
+                if (key == "fsk_mode" && value is Boolean) {
+                    setFskModeEnabled(value)
+                }
             }
-            if (key == "speaker" && value is Boolean) {
-                setSpeakerEnabled(value)
-            }
-            // Toggle 4-FSK audio transport mode
-            if (key == "fsk_mode" && value is Boolean) {
-                setFskModeEnabled(value)
-            }
+            val json = configState.toString()
+            Log.d("NadeSession", "updateConfiguration: $json")
+            NadeCore.setConfig(json)
         }
-        NadeCore.setConfig(configState.toString())
     }
 
     /**
