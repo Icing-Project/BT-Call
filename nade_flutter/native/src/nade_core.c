@@ -39,6 +39,7 @@
 #define OUT_CAPACITY 262144
 #define IN_CAPACITY 262144
 #define AUDIO_FRAME_SAMPLES 320
+#define MAX_LATENCY_SAMPLES 6400 // ~400ms at 16kHz
 
 // -------------------------------------------------------------------------
 // 4-FSK Modulation Configuration
@@ -1355,6 +1356,37 @@ static void handle_audio_plain_locked(const uint8_t *data, size_t len) {
                                         min_size(sample_count, (uint16_t)AUDIO_FRAME_SAMPLES),
                                         &g_session.dec_state);
     if (decoded > 0) {
+        // Latency Control: Check if we are accumulating too much audio
+        size_t current_buffered = available_int16(&g_spk_size, &g_spk_mutex);
+        if (current_buffered + decoded > MAX_LATENCY_SAMPLES) {
+            // We are behind! Drop the OLDEST samples to catch up.
+            // Calculate how much we need to drop to fit the new samples + keep buffer under limit
+            // Actually, simplified approach: If we are over the limit, drop enough to get back to target.
+            // Target: MAX_LATENCY_SAMPLES - decoded (so we have room for new samples)
+            
+            size_t target_size = MAX_LATENCY_SAMPLES > decoded ? MAX_LATENCY_SAMPLES - decoded : 0;
+            if (current_buffered > target_size) {
+                size_t to_drop = current_buffered - target_size;
+                int16_t dummy[AUDIO_FRAME_SAMPLES];
+                size_t dropped_total = 0;
+                while (dropped_total < to_drop) {
+                    size_t chunk = min_size(to_drop - dropped_total, AUDIO_FRAME_SAMPLES);
+                    pop_int16_ring(g_spk_ring, SPK_CAPACITY, &g_spk_head, &g_spk_size, 
+                                   dummy, chunk, &g_spk_mutex);
+                    dropped_total += chunk;
+                }
+                
+                // Rate limit this log to avoid spamming
+                static uint64_t drop_log_last = 0;
+                uint64_t now = now_monotonic_ms();
+                if (now - drop_log_last > 2000) {
+                    __android_log_print(ANDROID_LOG_WARN, TAG, "Latency catch-up: Dropped %zu samples (~%d ms) to reduce delay", 
+                                       dropped_total, (int)(dropped_total / 16));
+                    drop_log_last = now;
+                }
+            }
+        }
+        
         push_int16_ring(g_spk_ring, SPK_CAPACITY, &g_spk_head, &g_spk_size,
                         pcm_buffer, decoded, &g_spk_mutex);
     }
@@ -1382,54 +1414,127 @@ static void handle_encrypted_payload_locked(const uint8_t *data, size_t len, boo
         return;
     }
     uint8_t plain[MAX_FRAME_BODY];
-    size_t plain_len = len;
+    size_t plain_len = 0;
+    bool processing_successful = false;
     
-    // Check if we should decrypt: frame is encrypted AND we have keys AND decrypt is enabled
-    if (encrypted && len > 16 && g_session.rx_aead_ready && g_config.decrypt) {
-        size_t cipher_len = len - 16;
-        uint8_t nonce[12];
-        compose_nonce(nonce, g_session.rx_nonce_base, g_session.rx_counter++);
-        crypto_aead_ctx ctx;
-        crypto_aead_init_ietf(&ctx, g_session.rx_key, nonce);
-        if (crypto_aead_read(&ctx, plain, data + cipher_len,
-                              NULL, 0, data, cipher_len) != 0) {
-            crypto_wipe(&ctx, sizeof(ctx));
-            __android_log_print(ANDROID_LOG_WARN, TAG, "Failed to decrypt frame. Nonce counter: %llu", (unsigned long long)(g_session.rx_counter - 1));
-            return;
+    // DECISION LOGIC:
+    // 1. If Decrypt is ENABLED: We MUST try to decrypt everything.
+    //    - If frame is CIPHER (encrypted=true): Normal decryption.
+    //    - If frame is PLAINTEXT (encrypted=false): We still try to decrypt it (treating it as ciphertext).
+    //      This will fail (because it's not valid ciphertext), triggering the "Garbage/Noise" fallback.
+    //      This satisfies the user's request to "play audio after trying to decrypt it" (which results in noise).
+    // 2. If Decrypt is DISABLED:
+    //    - If frame is CIPHER: We play it as garbage (raw ciphertext).
+    //    - If frame is PLAINTEXT: We play it normally.
+    
+    if (g_config.decrypt) {
+        // Enforce decryption for ALL frames when decrypt is enabled
+        // This covers both valid Encrypted frames AND Plaintext frames (which will fail decryption)
+        
+        if (len <= 16) {
+            // Too short to be valid ciphertext (need nonce/tag overhead)
+            // Treat as failure -> garbage
+             __android_log_print(ANDROID_LOG_WARN, TAG, "Frame too short for decryption. Playing as garbage.");
+        } else {
+            size_t cipher_len = len - 16;
+            uint8_t nonce[12];
+            
+            // FIX: Only increment the RX counter if the frame claims to be encrypted.
+            // The Sender ONLY increments its TX counter when sending FRAME_KIND_CIPHER.
+            // If we increment on Plaintext frames, we will desync (Sender=N, Receiver=N+1, N+2...).
+            // When Sender resumes encryption (at N+1), we will be ahead and fail decryption.
+            uint64_t counter_to_use = g_session.rx_counter;
+            if (encrypted) {
+                g_session.rx_counter++;
+            }
+            
+            compose_nonce(nonce, g_session.rx_nonce_base, counter_to_use);
+            crypto_aead_ctx ctx;
+            crypto_aead_init_ietf(&ctx, g_session.rx_key, nonce);
+            
+            // Try to decrypt into 'plain' buffer
+            // If this is actually a plaintext frame, this WILL fail.
+            if (crypto_aead_read(&ctx, plain, data + cipher_len,
+                                  NULL, 0, data, cipher_len) != 0) {
+                // DECRYPTION FAILED (Bad Key OR Plaintext-treated-as-Ciphertext)
+                crypto_wipe(&ctx, sizeof(ctx));
+                __android_log_print(ANDROID_LOG_WARN, TAG, "Failed to decrypt frame (or forced decrypt of plaintext). Playing as garbage.");
+                
+                // Fallback: Construct a fake audio frame
+                plain[0] = AUDIO_PAYLOAD_TYPE;
+                plain[1] = 1; 
+                plain[2] = 0; 
+                plain[3] = 0; 
+                plain[4] = (uint8_t)(AUDIO_FRAME_SAMPLES & 0xFF);
+                plain[5] = (uint8_t)(AUDIO_FRAME_SAMPLES >> 8);
+                
+                size_t max_payload = sizeof(plain) - 8;
+                // Use the original input 'data' as the noise source
+                // Ensure we don't overflow the 'plain' buffer
+                size_t payload_size = min_size(len, max_payload);
+                
+                plain[6] = (uint8_t)(payload_size & 0xFF);
+                plain[7] = (uint8_t)(payload_size >> 8);
+                
+                // CRITICAL FIX: Scramble the data instead of copying it.
+                // If input was plaintext, copying it causes "Robot Voice".
+                // We use ChaCha20 to XOR the input with the keystream, ensuring it becomes random noise.
+                // Note: If encrypted==false, we reuse the current nonce (index N) repeatedly.
+                // This is acceptable for generating "garbage noise" relative to an invalid state.
+                crypto_chacha20_ietf(plain + 8, data, payload_size, g_session.rx_key, nonce, 0);
+                
+                plain_len = payload_size + 8;
+                processing_successful = true;
+            } else {
+                // DECRYPTION SUCCESS (Valid Encrypted Frame)
+                crypto_wipe(&ctx, sizeof(ctx));
+                plain_len = cipher_len;
+                if (!g_session.handshake_acknowledged) {
+                    g_session.handshake_acknowledged = true;
+                    __android_log_print(ANDROID_LOG_DEBUG, TAG, "Handshake acknowledged via decrypted frame");
+                }
+                processing_successful = true;
+            }
         }
-        crypto_wipe(&ctx, sizeof(ctx));
-        plain_len = cipher_len;
-        if (!g_session.handshake_acknowledged) {
-            g_session.handshake_acknowledged = true;
-            __android_log_print(ANDROID_LOG_DEBUG, TAG,
-                                "Handshake acknowledged via decrypted frame (role=%d)",
-                                g_session.role);
-        }
-    } else if (encrypted && len > 16 && g_session.rx_aead_ready && !g_config.decrypt) {
-        // Decrypt is disabled mid-call: still increment counter to stay in sync, but skip audio
-        g_session.rx_counter++;
-        __android_log_print(ANDROID_LOG_DEBUG, TAG, "Skipping encrypted frame (decrypt disabled)");
-        return;
-    } else if (!encrypted && g_config.decrypt && g_session.rx_aead_ready) {
-        // Security: Received plaintext but we expect encrypted audio - reject it
-        // This prevents downgrade attacks where peer sends unencrypted data unexpectedly
-        static uint64_t reject_log_count = 0;
-        if (reject_log_count++ % 100 == 0) {
-            __android_log_print(ANDROID_LOG_WARN, TAG, "Rejecting plaintext frame (decrypt enabled, expecting encrypted)");
-        }
-        return;
     } else {
-        // Plaintext frame when decrypt is disabled, or during handshake setup
-        memcpy(plain, data, min_size(len, sizeof(plain)));
-        plain_len = min_size(len, sizeof(plain));
+        // Decrypt is DISABLED
+        if (encrypted) {
+            // Case: Encrypted frame received, but we are not decrypting.
+            // Play raw ciphertext as garbage.
+            g_session.rx_counter++; // Keep counter syncing just in case
+            __android_log_print(ANDROID_LOG_DEBUG, TAG, "Playing encrypted frame as garbage (decrypt disabled)");
+            
+            plain[0] = AUDIO_PAYLOAD_TYPE;
+            plain[1] = 1;
+            plain[2] = 0;
+            plain[3] = 0; 
+            plain[4] = (uint8_t)(AUDIO_FRAME_SAMPLES & 0xFF);
+            plain[5] = (uint8_t)(AUDIO_FRAME_SAMPLES >> 8);
+            
+            size_t max_payload = sizeof(plain) - 8;
+            size_t payload_size = min_size(len, max_payload); // Use full frame len as noise
+            
+            plain[6] = (uint8_t)(payload_size & 0xFF);
+            plain[7] = (uint8_t)(payload_size >> 8);
+            
+            memcpy(plain + 8, data, payload_size);
+            plain_len = payload_size + 8;
+            processing_successful = true;
+        } else {
+            // Case: Plaintext frame received, and decrypt is disabled.
+            // Normal operation (Insecure).
+            memcpy(plain, data, min_size(len, sizeof(plain)));
+            plain_len = min_size(len, sizeof(plain));
+            processing_successful = true;
+        }
     }
-    if (plain_len == 0) {
-        return;
-    }
-    if (plain[0] == AUDIO_PAYLOAD_TYPE) {
-        handle_audio_plain_locked(plain, plain_len);
-    } else {
-        handle_control_plain_locked(plain, plain_len);
+
+    if (processing_successful && plain_len > 0) {
+        if (plain[0] == AUDIO_PAYLOAD_TYPE) {
+            handle_audio_plain_locked(plain, plain_len);
+        } else {
+            handle_control_plain_locked(plain, plain_len);
+        }
     }
 }
 
