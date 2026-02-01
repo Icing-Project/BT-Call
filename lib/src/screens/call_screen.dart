@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../providers/bluetooth_provider.dart';
+import '../providers/settings_provider.dart';
 
 class CallScreen extends StatefulWidget {
   final String deviceName;
@@ -69,6 +70,7 @@ class _CallScreenState extends State<CallScreen> {
   @override
   Widget build(BuildContext context) {
     final btProvider = context.watch<BluetoothProvider>();
+    final settings = context.watch<SettingsProvider>();
 
     return PopScope(
       canPop: false,
@@ -80,237 +82,252 @@ class _CallScreenState extends State<CallScreen> {
       child: Scaffold(
         backgroundColor: Colors.black,
         body: SafeArea(
-          child: Column(
-            children: [
-              // Header with connection status
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    Text(
-                      'Connected',
-                      style: TextStyle(
-                        color: Colors.green[300],
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      widget.deviceName,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 4),
-                    if (widget.aliasSummary?.isNotEmpty == true)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 4.0),
-                        child: Text(
-                          'Alias: ${widget.aliasSummary}',
+          child: SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: MediaQuery.of(context).size.height - 
+                           MediaQuery.of(context).padding.top - 
+                           MediaQuery.of(context).padding.bottom,
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Header with connection status
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      children: [
+                        Text(
+                          'Connected',
                           style: TextStyle(
-                            color: Colors.blue[200],
-                            fontSize: 16,
+                            color: Colors.green[300],
+                            fontSize: 18,
                             fontWeight: FontWeight.w500,
                           ),
-                          textAlign: TextAlign.center,
                         ),
-                      ),
-                    Text(
-                        'Address: ${widget.deviceAddress}',
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontSize: 14,
-                      ),
-                    ),
-                    if (widget.publicKey?.isNotEmpty == true)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4.0),
-                        child: Text(
-                          _shortenKey(widget.publicKey!),
-                          style: TextStyle(
-                            color: Colors.blue[200],
-                            fontSize: 13,
-                            fontFeatures: const [FontFeature.tabularFigures()],
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.deviceName,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
                           ),
                           textAlign: TextAlign.center,
                         ),
+                        const SizedBox(height: 4),
+                        if (widget.aliasSummary?.isNotEmpty == true)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4.0),
+                            child: Text(
+                              'Alias: ${widget.aliasSummary}',
+                              style: TextStyle(
+                                color: Colors.blue[200],
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        Text(
+                            'Address: ${widget.deviceAddress}',
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 14,
+                          ),
+                        ),
+                        if (widget.publicKey?.isNotEmpty == true)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4.0),
+                            child: Text(
+                              _shortenKey(widget.publicKey!),
+                              style: TextStyle(
+                                color: Colors.blue[200],
+                                fontSize: 13,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  
+                  // Large device avatar
+                  Container(
+                    width: 150,
+                    height: 150,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.blue[400]!,
+                          Colors.blue[600]!,
+                        ],
                       ),
-                  ],
-                ),
-              ),
-              
-              // Spacer to center the avatar
-              const Spacer(),
-              
-              // Large device avatar
-              Container(
-                width: 200,
-                height: 200,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.blue[400]!,
-                      Colors.blue[600]!,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.blue.withOpacity(0.3),
+                          blurRadius: 20,
+                          spreadRadius: 5,
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      FontAwesomeIcons.mobileScreen,
+                      color: Colors.white,
+                      size: 60,
+                    ),
+                  ),
+                  
+                  // Bottom section with status, verbose panel, and controls
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Call status indicator
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        margin: const EdgeInsets.symmetric(horizontal: 48),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[900],
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 12,
+                              height: 12,
+                              decoration: const BoxDecoration(
+                                color: Colors.green,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              btProvider.status,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 20),
+                      
+                      // Encryption status indicator
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        margin: const EdgeInsets.symmetric(horizontal: 48),
+                        decoration: BoxDecoration(
+                          color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                              ? Colors.green[900] 
+                              : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                                  ? Colors.yellow[900] 
+                                  : Colors.orange[900],
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                                  ? FontAwesomeIcons.shield 
+                                  : FontAwesomeIcons.triangleExclamation,
+                              color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                                  ? Colors.green[300] 
+                                  : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                                      ? Colors.yellow[300] 
+                                      : Colors.orange[300],
+                              size: 16,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                                  ? 'Audio Encrypted' 
+                                  : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                                      ? 'Partial Encryption' 
+                                      : 'Audio Not Encrypted',
+                              style: TextStyle(
+                                color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
+                                    ? Colors.green[300] 
+                                    : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
+                                        ? Colors.yellow[300] 
+                                        : Colors.orange[300],
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      // Verbose mode logs panel (only shown when verbose mode is enabled)
+                      if (settings.verboseMode && btProvider.verboseLogs.isNotEmpty)
+                        _buildVerbosePanel(btProvider.verboseLogs),
+                      
+                      const SizedBox(height: 20),
+                      
+                      // Control buttons
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            // Encrypt toggle button
+                            _buildCallButton(
+                              icon: btProvider.encryptEnabled 
+                                  ? FontAwesomeIcons.key 
+                                  : FontAwesomeIcons.unlock,
+                              backgroundColor: btProvider.encryptEnabled 
+                                  ? Colors.blue[600]! 
+                                  : Colors.grey[600]!,
+                              onPressed: () => _performSelection(() => btProvider.toggleEncrypt(!btProvider.encryptEnabled)),
+                            ),
+                            
+                            // Decrypt toggle button
+                            _buildCallButton(
+                              icon: btProvider.decryptEnabled 
+                                  ? FontAwesomeIcons.lock 
+                                  : FontAwesomeIcons.lockOpen,
+                              backgroundColor: btProvider.decryptEnabled 
+                                  ? Colors.green[600]! 
+                                  : Colors.orange[600]!,
+                              onPressed: () => _performSelection(() => btProvider.toggleDecrypt(!btProvider.decryptEnabled)),
+                            ),
+                            
+                            // Hang up button
+                            _buildCallButton(
+                              icon: FontAwesomeIcons.phoneSlash,
+                              backgroundColor: Colors.red[600]!,
+                              onPressed: () => _performDestructive(() => _hangUp(context)),
+                            ),
+                            
+                            // Speaker button
+                            _buildCallButton(
+                              icon: btProvider.speakerOn
+                                  ? FontAwesomeIcons.volumeHigh
+                                  : FontAwesomeIcons.volumeXmark,
+                              backgroundColor: btProvider.speakerOn
+                                  ? Colors.blue[600]! 
+                                  : Colors.grey[800]!,
+                              onPressed: () => _performSelection(() => btProvider.toggleSpeaker(!btProvider.speakerOn)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 40),
                     ],
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.blue.withOpacity(0.3),
-                      blurRadius: 20,
-                      spreadRadius: 5,
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  FontAwesomeIcons.mobileScreen,
-                  color: Colors.white,
-                  size: 80,
-                ),
+                ],
               ),
-              
-              const Spacer(),
-              
-              // Call status indicator
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                margin: const EdgeInsets.symmetric(horizontal: 48),
-                decoration: BoxDecoration(
-                  color: Colors.grey[900],
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: const BoxDecoration(
-                        color: Colors.green,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      btProvider.status,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              
-              const SizedBox(height: 40),
-              
-              // Encryption status indicator
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                margin: const EdgeInsets.symmetric(horizontal: 48),
-                decoration: BoxDecoration(
-                  color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
-                      ? Colors.green[900] 
-                      : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
-                          ? Colors.yellow[900] 
-                          : Colors.orange[900],
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      (btProvider.decryptEnabled && btProvider.encryptEnabled) 
-                          ? FontAwesomeIcons.shield 
-                          : FontAwesomeIcons.triangleExclamation,
-                      color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
-                          ? Colors.green[300] 
-                          : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
-                              ? Colors.yellow[300] 
-                              : Colors.orange[300],
-                      size: 16,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      (btProvider.decryptEnabled && btProvider.encryptEnabled) 
-                          ? 'Audio Encrypted' 
-                          : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
-                              ? 'Partial Encryption' 
-                              : 'Audio Not Encrypted',
-                      style: TextStyle(
-                        color: (btProvider.decryptEnabled && btProvider.encryptEnabled) 
-                            ? Colors.green[300] 
-                            : (btProvider.decryptEnabled || btProvider.encryptEnabled) 
-                                ? Colors.yellow[300] 
-                                : Colors.orange[300],
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              
-              const SizedBox(height: 20),
-              
-              // Control buttons
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    // Encrypt toggle button
-                    _buildCallButton(
-                      icon: btProvider.encryptEnabled 
-                          ? FontAwesomeIcons.key 
-                          : FontAwesomeIcons.unlock,
-                      backgroundColor: btProvider.encryptEnabled 
-                          ? Colors.blue[600]! 
-                          : Colors.grey[600]!,
-                      onPressed: () => _performSelection(() => btProvider.toggleEncrypt(!btProvider.encryptEnabled)),
-                    ),
-                    
-                    // Decrypt toggle button
-                    _buildCallButton(
-                      icon: btProvider.decryptEnabled 
-                          ? FontAwesomeIcons.lock 
-                          : FontAwesomeIcons.lockOpen,
-                      backgroundColor: btProvider.decryptEnabled 
-                          ? Colors.green[600]! 
-                          : Colors.orange[600]!,
-                      onPressed: () => _performSelection(() => btProvider.toggleDecrypt(!btProvider.decryptEnabled)),
-                    ),
-                    
-                    // Hang up button
-                    _buildCallButton(
-                      icon: FontAwesomeIcons.phoneSlash,
-                      backgroundColor: Colors.red[600]!,
-                      onPressed: () => _performDestructive(() => _hangUp(context)),
-                    ),
-                    
-                    // Speaker button
-                    _buildCallButton(
-                      icon: btProvider.speakerOn
-                          ? FontAwesomeIcons.volumeHigh
-                          : FontAwesomeIcons.volumeXmark,
-                      backgroundColor: btProvider.speakerOn
-                          ? Colors.blue[600]! 
-                          : Colors.grey[800]!,
-                      onPressed: () => _performSelection(() => btProvider.toggleSpeaker(!btProvider.speakerOn)),
-                    ),
-                  ],
-                ),
-              ),
-              
-              const SizedBox(height: 60),
-            ],
+            ),
           ),
         ),
       ),
@@ -394,5 +411,76 @@ class _CallScreenState extends State<CallScreen> {
   String _shortenKey(String key) {
     if (key.length <= 16) return key;
     return '${key.substring(0, 16)}…';
+  }
+  
+  /// Build a panel showing verbose call operation logs
+  Widget _buildVerbosePanel(List<String> logs) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey[900]?.withOpacity(0.8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[700]!, width: 1),
+      ),
+      constraints: const BoxConstraints(maxHeight: 150),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.terminal, color: Colors.grey[400], size: 16),
+              const SizedBox(width: 8),
+              Text(
+                'Call Events',
+                style: TextStyle(
+                  color: Colors.grey[400],
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 12, color: Colors.grey),
+          Expanded(
+            child: ListView.builder(
+              shrinkWrap: true,
+              reverse: true, // Show newest at bottom
+              itemCount: logs.length,
+              itemBuilder: (context, index) {
+                final log = logs[logs.length - 1 - index];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    log,
+                    style: TextStyle(
+                      color: _getLogColor(log),
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Color _getLogColor(String log) {
+    if (log.contains('❌') || log.contains('Error')) {
+      return Colors.red[300]!;
+    } else if (log.contains('⚠️')) {
+      return Colors.orange[300]!;
+    } else if (log.contains('✓')) {
+      return Colors.green[300]!;
+    } else if (log.contains('🔐') || log.contains('🔊')) {
+      return Colors.blue[300]!;
+    } else if (log.contains('📱')) {
+      return Colors.cyan[300]!;
+    }
+    return Colors.grey[300]!;
   }
 }
