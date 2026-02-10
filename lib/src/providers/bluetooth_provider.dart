@@ -48,6 +48,7 @@ class BluetoothProvider extends ChangeNotifier {
   bool _serverStarting = false;
   bool _serverActive = false;
   bool _isConnecting = false;
+  bool _suppressStopErrors = false;
   String? _cachedDiscoveryHint;
   ContactsProvider? _contactsProvider;
   final Map<String, String> _hintByAddress = {};
@@ -241,6 +242,9 @@ class BluetoothProvider extends ChangeNotifier {
         notifyListeners();
         break;
       case 'onError':
+        if (_suppressStopErrors) {
+          break;
+        }
         _status = 'Error: ${call.arguments}';
         _isConnecting = false;
         _scanInProgress = false;
@@ -340,6 +344,7 @@ class BluetoothProvider extends ChangeNotifier {
       return;
     }
     _status = 'stopping server';
+    _suppressStopErrors = true;
     notifyListeners();
     try {
       await _service.stop();
@@ -348,14 +353,16 @@ class BluetoothProvider extends ChangeNotifier {
       _status = 'stopped';
       _pushMessage('Server stopped.');
     } on PlatformException catch (e) {
-      _pushMessage(
-        'Failed to stop server: ${e.message ?? 'unknown error'}',
-        type: UXMessageType.error,
-      );
+      // Ignore stop errors to avoid showing a false error when server is
+      // already stopping/stopped.
+      _status = 'stopped';
     } catch (e) {
-      _pushMessage('Failed to stop server: $e', type: UXMessageType.error);
+      // Ignore stop errors to avoid showing a false error when server is
+      // already stopping/stopped.
+      _status = 'stopped';
     } finally {
       _serverStarting = false;
+      _suppressStopErrors = false;
       notifyListeners();
     }
   }

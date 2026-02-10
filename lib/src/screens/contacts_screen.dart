@@ -14,6 +14,7 @@ import '../providers/contacts_provider.dart';
 import '../repositories/share_profile_repository.dart';
 import '../services/bluetooth_audio_service.dart';
 import '../services/asymmetric_crypto_service.dart';
+import 'key_management.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
@@ -369,7 +370,13 @@ class _ContactsScreenState extends State<ContactsScreen>
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
-              onPressed: () => Navigator.of(context).pop(),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ManageKeysPage(),
+                  ),
+                );
+              },
               icon: const Icon(Icons.manage_accounts),
               label: const Text('Manage keys'),
             ),
