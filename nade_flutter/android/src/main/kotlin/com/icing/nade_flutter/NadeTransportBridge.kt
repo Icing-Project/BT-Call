@@ -73,6 +73,11 @@ object NadeTransportBridge {
     }
 
     @JvmStatic
+    fun setMute(muted: Boolean) {
+        sessionRef.get()?.setMute(muted)
+    }
+
+    @JvmStatic
     fun setConfig(key: String, value: Any) {
         android.util.Log.d("NadeTransportBridge", "setConfig called with key=$key, value=$value")
         sessionRef.get()?.updateConfiguration(mapOf(key to value))

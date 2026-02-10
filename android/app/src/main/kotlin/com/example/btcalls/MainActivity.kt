@@ -193,6 +193,13 @@ class MainActivity : FlutterActivity() {
                     client?.toggleSpeaker(enabled)
                     result.success(null)
                 }
+                "setMute" -> {
+                    // Toggle mute mid-call
+                    val muted = call.argument<Boolean>("mute") ?: false
+                    server?.setMute(muted)
+                    client?.setMute(muted)
+                    result.success(null)
+                }
                 "endCall" -> {
                     android.util.Log.d("MainActivity", "endCall method called")
                     // Stop the connection - closing the stream will signal end of call to remote side

@@ -40,6 +40,8 @@ internal class NadeSession(
     private val fskSamplesPerByte = 320 // 4 symbols * 80 samples/symbol at 8kHz
     private val fskModulatedBuffer = ShortArray(2048 * fskSamplesPerByte) // PCM output for modulated data
     private val fskDemodulatedBuffer = ByteArray(4096) // Demodulated bytes from received audio
+    
+    @Volatile private var isMuted = false
 
     private val running = AtomicBoolean(false)
     private val transportReady = AtomicBoolean(false)
@@ -184,6 +186,13 @@ internal class NadeSession(
         }
     }
 
+    fun setMute(muted: Boolean) {
+        if (isMuted != muted) {
+            isMuted = muted
+            Log.i("NadeSession", "Microphone mute state: $muted")
+        }
+    }
+
     fun updateConfiguration(values: Map<String, Any?>) {
         synchronized(configState) {
             for ((key, value) in values) {
@@ -195,10 +204,14 @@ internal class NadeSession(
                 if (key == "speaker" && value is Boolean) {
                     setSpeakerEnabled(value)
                 }
+                if (key == "mute" && value is Boolean) {
+                    setMute(value)
+                }
                 // Toggle 4-FSK audio transport mode
                 if (key == "fsk_mode" && value is Boolean) {
                     setFskModeEnabled(value)
                 }
+
             }
             val json = configState.toString()
             Log.d("NadeSession", "updateConfiguration: $json")
@@ -381,6 +394,9 @@ internal class NadeSession(
             while (running.get()) {
                 val read = recorder.read(micBuffer, 0, micBuffer.size)
                 if (read > 0) {
+                    if (isMuted) {
+                        micBuffer.fill(0, 0, read)
+                    }
                     NadeCore.feedMicFrame(micBuffer, read)
                     frames++
                     if (frames % 100 == 0) Log.d("NadeSession", "Mic captured $frames frames")

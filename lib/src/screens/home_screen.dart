@@ -20,6 +20,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   BluetoothProvider? _connectionProvider;
+  bool _callScreenActive = false;
   // Manual connect controller
   final TextEditingController _manualController = TextEditingController();
   bool _isMacValid = false;
@@ -59,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _scheduleMessageFlush(btProvider);
     
     // Navigate to call screen when connected
+    if (_callScreenActive) return;
     if (btProvider.isConnected && btProvider.connectedDevice != null) {
       final contactsProvider = context.read<ContactsProvider>();
       final device = btProvider.connectedDevice!;
@@ -69,16 +71,23 @@ class _HomeScreenState extends State<HomeScreen> {
           ? null
           : matches.map((contact) => contact.name).join(', ');
       final keyPreview = matches.isEmpty ? '' : matches.first.publicKey;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => CallScreen(
-            deviceName: device.name,
-            deviceAddress: device.address,
-            aliasSummary: aliasSummary,
-            publicKey: keyPreview,
-          ),
-        ),
-      );
+      _callScreenActive = true;
+      Navigator.of(context)
+          .push(
+            MaterialPageRoute(
+              builder: (context) => CallScreen(
+                deviceName: device.name,
+                deviceAddress: device.address,
+                aliasSummary: aliasSummary,
+                publicKey: keyPreview,
+              ),
+            ),
+          )
+          .then((_) {
+            if (mounted) {
+              _callScreenActive = false;
+            }
+          });
     }
   }
     void _scheduleMessageFlush(BluetoothProvider provider) {
