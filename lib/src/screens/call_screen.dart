@@ -118,7 +118,7 @@ class _CallScreenState extends State<CallScreen> {
                         aliasSummary: widget.aliasSummary,
                         publicKey: widget.publicKey,
                       ),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 6),
                       const _DeviceAvatar(),
                       const SizedBox(height: 32),
                       const _StatusIndicator(),
@@ -202,19 +202,19 @@ class _CallHeader extends StatelessWidget {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 4),
-          if (aliasSummary?.isNotEmpty == true)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4.0),
-              child: Text(
-                'Alias: $aliasSummary',
-                style: TextStyle(
-                  color: Colors.blue[200],
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
+          // if (aliasSummary?.isNotEmpty == true)
+          //   Padding(
+          //     padding: const EdgeInsets.only(bottom: 4.0),
+          //     child: Text(
+          //       'Alias: $aliasSummary',
+          //       style: TextStyle(
+          //         color: Colors.blue[200],
+          //         fontSize: 16,
+          //         fontWeight: FontWeight.w500,
+          //       ),
+          //       textAlign: TextAlign.center,
+          //     ),
+          //   ),
           Text(
             'Address: $deviceAddress',
             style: TextStyle(color: Colors.grey[400], fontSize: 14),
