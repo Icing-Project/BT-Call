@@ -91,4 +91,9 @@ class BluetoothAudioServer(
     fun toggleSpeaker(enabled: Boolean) {
         NadeTransportBridge.updateSpeaker(enabled)
     }
+
+    // Toggle mute at runtime
+    fun setMute(muted: Boolean) {
+        NadeTransportBridge.setMute(muted)
+    }
 }
